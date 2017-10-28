@@ -7,11 +7,15 @@ title: Philip Botros
 
 <ul class="default">
 	  {% for post in site.posts %}
-		  <div>
+		  <div style="clear:both">
 		    <li> 
-		    	{{ post.date | date_to_string }} <a href="{{ post.url }}" title="{{ post.title }}">{{ post.title }}</a>  
+		    	 <img src="{{ post.cover }}">
+
+		    	{{ post.date | date_to_string }} <a href="{{ post.url }}" title="{{ post.title }}">{{ post.title }}
+		    	{{ post.excerpt }}
+		    </a>  
 		    </li>
-		    <img src="{{ post.cover }}">
-		  </div>
+		    	 </div>
+		  	
 	  {% endfor %}
 </ul>
