@@ -2,6 +2,16 @@
 layout: default
 title: Philip Botros
 ---
-<div class="blurb">
-	<p>Testing 1,2,3</p>
-</div><!-- /.blurb -->
+
+
+
+<ul class="default">
+	  {% for post in site.posts %}
+		  <div>
+		    <li> 
+		    	{{ post.date | date_to_string }} <a href="{{ post.url }}" title="{{ post.title }}">{{ post.title }}</a>  
+		    </li>
+		    <img src="{{ post.cover }}">
+		  </div>
+	  {% endfor %}
+</ul>
