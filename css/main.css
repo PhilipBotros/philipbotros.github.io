@@ -8,7 +8,7 @@ nav{
     background-color: white;
     position: fixed;
     width: 100%;
-    border-bottom: 1px;
+    /*border-bottom: 0.8px solid #d5d5d5;*/
 
 }
 
@@ -71,9 +71,11 @@ p {
     color: #999;
 }
 footer {
-    /*border-top: 1px solid #d5d5d5;*/
+    /*width: 100%;  */
+    /*border-top: 0.8px solid #d5d5d5;*/
     font-size: .8em;
-    clear: both;    
+    clear: both;  
+
 }
 
 
@@ -85,7 +87,7 @@ full img{
 
 ind img {
     border-radius: 50%;
-
+    margin-bottom: 20px;
     /*border-radius: 50px 15px ;*/
 
 }
