@@ -11,7 +11,8 @@ title: Philip Botros
 
 <style>
 .title {
-	font-size: 1.2em;
+	padding-top: 30px;
+	font-size: 1.4em;
 	font-family:'Montserrat', Georgia, serif;
 	font-weight: bold;
 }
@@ -20,11 +21,16 @@ title: Philip Botros
 <h1> posts </h1>
 <ul class="default">
 	  {% for post in site.posts %}
-		    <li style="clear:both;border: 1px solid #d5d5d5;padding: 20px;overflow: hidden"> 
+		    <li style="clear:both;border: 0px solid #d5d5d5;overflow: hidden; display: block"> 
 		    	<!-- <span class="author">{{ post.date | date_to_string }}</span> -->
-		    	 <a href="{{ post.url }}"> <img src="{{ post.cover }}" title="{{ post.title }}"> <span class="title"> {{ post.title }} </span>
+		    	 <a style="padding-right: 0px" href="{{ post.url }}"> <img src="{{ post.cover }}" title="{{ post.title }}"> <span class="title"> {{ post.title }} </span>
 		    	{{ post.excerpt }}
 		    </a> 
+		    <div style="padding-top: 10px">
+		    <div style="color:black; display: block;background-color: white"> <a href =  "/about" > Philip Botros </a> <ind> <img src="about/pb2.jpg" alt="PF"
+      style="width:40px;height:40px;" border="0.5"> </ind></div>
+      		<div style="font-size:0.8em;color:#999;clear:right;background-color: white"> {{ post.date | date_to_string }} </div>
+      		</div>
 		    </li>
 		    	 
 		  	
