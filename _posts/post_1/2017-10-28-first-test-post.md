@@ -5,4 +5,4 @@ date: 2017-10-28
 cover: 21000.png
 ---
 
-Testing the layout
+Today we dive deep into one of the hottest generative models in the deep learning community, the generative adverserial network! This brilliant algorithm can be used to model any arbitrary distribution and today we are going to use it to generate digits from the all mighty MNIST dataset.

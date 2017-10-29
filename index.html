@@ -2,20 +2,31 @@
 layout: default
 title: Philip Botros
 ---
+<style>
+.author {
+	color: gray;
+	font-size: 0.8em
+}
+</style>
 
+<style>
+.title {
+	font-size: 1.2em;
+	font-family:'Montserrat';
+	font-weight: bold;
+}
+</style>
 
-<h1> Posts </h1>
+<h1> posts </h1>
 <ul class="default">
 	  {% for post in site.posts %}
-		  <div style="clear:both">
-		    <li> 
-		    	 <img src="{{ post.cover }}">
-
-		    	{{ post.date | date_to_string }} <a href="{{ post.url }}" title="{{ post.title }}">{{ post.title }}
+		    <li style="clear:both;border: 1px solid #d5d5d5;padding: 20px;overflow: hidden"> 
+		    	<!-- <span class="author">{{ post.date | date_to_string }}</span> -->
+		    	 <a href="{{ post.url }}"> <img src="{{ post.cover }}" title="{{ post.title }}"> <span class="title"> {{ post.title }} </span>
 		    	{{ post.excerpt }}
-		    </a>  
+		    </a> 
 		    </li>
-		    	 </div>
+		    	 
 		  	
 	  {% endfor %}
 </ul>
