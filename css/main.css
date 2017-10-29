@@ -7,6 +7,7 @@ nav{
     /*background-image: 'sf.jpeg';*/
     background-color: white;
     position: fixed;
+    width: 100%;
 
 }
 
@@ -19,7 +20,7 @@ nav ul {
 }
 
 nav ul li {
-    display: inline;
+    /*display: inline;*/
 
 }
 
@@ -52,14 +53,18 @@ a {
 a:hover {
     text-decoration: underline;
 }
+
+.active {
+    color: #999;
+}
 h1 {
 /*    font-size: 2em;
     font-family: "Bodoni MT", Didot, "Didot LT STD", "Book Antiqua", Garamond, "Times New Roman", serif;*/
     font: 400 35px/1.5 'Montserrat', Georgia, serif;
-    padding-top: 50px;
+    /*padding-top: 50px;*/
 }
 p {
-    font-family: 'Open Sans',` Georgia, serif;
+    font: 400 14px/1.2 'Open Sans', Georgia, serif;
     font-size: .9em;
     line-height: 1.4em;
     color: #999;
@@ -77,6 +82,13 @@ ind img {
 
 }
 
+ind2 img {
+    border-radius: 10px;
+
+    /*border-radius: 50px 15px ;*/
+
+}
+
 img { 
     float:left;
     width:200px; height: 200px;
@@ -84,9 +96,16 @@ img {
     border-radius: 10px;
     /*border-radius: 50%;*/
 }
+
+h1.posts{
+/*    font-size: 2em;
+    font-family: "Bodoni MT", Didot, "Didot LT STD", "Book Antiqua", Garamond, "Times New Roman", serif;*/
+    font: 400 35px/1.5 'Montserrat', Georgia, serif;
+    padding-top: 50px;
+}
 ul.posts { 
     margin: 20px auto 40px; 
-    font-size: 1.5em;
+    font-size: 2em;
 }
 
 
