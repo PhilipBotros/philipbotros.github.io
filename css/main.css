@@ -62,7 +62,8 @@ a:hover {
 h1 {
 /*    font-size: 2em;
     font-family: "Bodoni MT", Didot, "Didot LT STD", "Book Antiqua", Garamond, "Times New Roman", serif;*/
-    font: 400 35px/1.5 'Montserrat', Georgia, serif;
+    font: 400 25px/1.5 'Montserrat', Georgia, serif;
+    /*font-weight: bold;*/
     /*padding-top: 50px;*/
 }
 p {
