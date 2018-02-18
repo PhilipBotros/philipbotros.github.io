@@ -6,7 +6,7 @@ body {
 nav{
     /*background-image: 'sf.jpeg';*/
     background-color: white;
-    position: fixed;
+    /*position: fixed;*/
     width: 100%;
     /*border-bottom: 0.8px solid #d5d5d5;*/
     top: 0;
@@ -63,15 +63,28 @@ h1 {
 /*    font-size: 2em;
     font-family: "Bodoni MT", Didot, "Didot LT STD", "Book Antiqua", Garamond, "Times New Roman", serif;*/
     font: 400 25px/1.5 'Montserrat', Georgia, serif;
+    /*color: #999;*/
     /*font-weight: bold;*/
     /*padding-top: 50px;*/
 }
+h2{
+/*    font-size: 2em;
+    font-family: "Bodoni MT", Didot, "Didot LT STD", "Book Antiqua", Garamond, "Times New Roman", serif;*/
+    font: 400 15px/1.5 'Montserrat', Georgia, serif;
+    /*color: #999;*/
+    /*font-weight: bold;*/
+    /*padding-top: 50px;*/
+}
+
+
 p {
     font: 400 14px/1.2 'Open Sans', Georgia, serif;
     font-size: .9em;
     line-height: 1.4em;
-    color: #999;
-}
+    /*color: #999;*/
+    /*color: black;*/
+    /*color: #5b5b5b;*/
+}  
 footer {
     /*width: 100%;  */
     /*border-top: 0.8px solid #d5d5d5;*/
@@ -134,3 +147,9 @@ ul,li { list-style-type: none;
 li {
     margin-bottom: 20px;
 }
+p.posts{
+    color: #999;
+}
+/*.MathJax_Display {
+  color: #5b5b5b !important;
+}*/

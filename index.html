@@ -19,12 +19,14 @@ title: Philip Botros
 </style>
 
 <!-- <h1> posts </h1> -->
-<ul style="padding-top: 100px">
+<ul style="padding-top: 30px">
 	  {% for post in site.posts %}
 		    <li style="clear:both;border: 0px solid #d5d5d5;overflow: hidden; display: block"> 
 		    	<!-- <span class="author">{{ post.date | date_to_string }}</span> -->
 		    	 <a style="padding-right: 0px" href="{{ post.url }}"><home> <img src="{{ post.cover }}" title="{{ post.title }}"> </home> <span class="title"> {{ post.title }} </span>
+		    	 <div style="color: #999">
 		    	{{ post.excerpt }}
+		    	</div>
 		    </a> 
 <!-- 		    /*<div style="padding-top: 80px;font-size:0.8em;color:#999;clear:right;background-color: white"> {{ post.date | date_to_string }} */
       		</div> -->
