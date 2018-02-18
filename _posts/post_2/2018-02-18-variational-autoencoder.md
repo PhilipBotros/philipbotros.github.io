@@ -7,7 +7,7 @@ mathjax: true
 excerpt: <br>In most classic Machine Learning problems we are interested in learning a mapping from the input data to a label, more recently however, a lot of interest has sparked in the field of generative modelling. We will look at one of the most popular models in depth, the variational autoencoder. 
 background: ../../../cover2.png
 ---
-In most classic Machine Learning problems we are interested in learning a mapping from the input data to a label, more recently however, a lot of interest has sparked in the field of generative modelling.  While classification is concerned with learning a conditional distribution $p(\mathbf{y}|\mathbf{x})$,  generative modelling has as a goal to directly learn the data distribution $p(\mathbf{x})$ such that we can freely reproduce this data. In a world where unlabeled data is ubiquitous and labeled data is sparse/expensive, this seems to be an area of great importance.
+In most classic Machine Learning problems we are interested in learning a mapping from the input data to a label, more recently however, a lot of interest has sparked in the field of generative modelling. While classification is concerned with learning a conditional distribution $p(\mathbf{y}|\mathbf{x})$,  generative modelling has as a goal to directly learn the data distribution $p(\mathbf{x})$ such that we can freely reproduce this data. In a world where unlabeled data is ubiquitous and labeled data is sparse/expensive, this seems to be an area of great importance.
 <h2>Probabilistic perspective</h2>
 We have to take a slight detour to arrive at the objective function of the VAE since it has strong theoretical foundations in Bayesian statistics and we can also look at the auto encoding perspective. To start, we have to figure out what variational inference is, why we use a neural network to approximate the parameters and what constraints we put on the model to make it scalable.
 
@@ -68,13 +68,11 @@ Where $\lambda \Omega$ is any arbitrary regularization penalty.
 Although standard auto encoders are very useful for tasks like compression or image denoising, we can not sample from them to generate new examples, for this we need a probabilistic auto encoder.
 <h2>Putting it together</h2>
 Finally we are getting to the crux of the matter, we know if we want to sample from the model that we need to learn a probabilistic mapping $p_{enc}(\mathbf{z|x})$ and a decoder distribution $p_{dec}(\mathbf{x|z})$. From the probabilistic perspective we remember that the encoder distribution $p_{enc}(\mathbf{z|x})$ is intractable and we can use variational inference to approximate this distribution denoted by $q_{\phi}(\mathbf{z|x})$. From the probabilistic latent space we still need to map back the input space to generate real samples, this generator network is denoted by $p_{\theta}(\mathbf{x|z})$.
-A neural network is used for both, to learn the parameters of the variational posterior $q_\phi(\mathbf{z|x})$ and the parameters of the generator network $p\mathbf{_\theta(x|z)}$. The encoder-decoder structure of the VAE works by jointly optimizing the variational lower bound with respect to both the variational parameters $\phi$ and generative parameters 
-
-$\theta$:
+A neural network is used for both, to learn the parameters of the variational posterior $q_\phi(\mathbf{z|x})$ and the parameters of the generator network $p\mathbf{_\theta(x|z)}$. The encoder-decoder structure of the VAE works by jointly optimizing the variational lower bound with respect to both the variational parameters $\phi$ and generative parameters $\theta$:
 
 $$ \mathcal{L}(\mathbf{\theta, \phi; x}^{(i)}) = \mathbb{E}_{q_\phi\mathbf{(z|x}^{(i)})}\big[\log p\mathbf{_\theta(x}^{(i)}|\mathbf{z)}\big]-D_{KL}(q_\phi(\mathbf{z|x}^{(i)})||p{\mathbf{_\theta(z))}} $$
 
-Where the first term is simply the reconstruction error of the model with respect to the original input and the second term acts as a regularizer by keeping the latent space close to the prior of, usually, a standard normal distribution. 
+Where the first term is simply the reconstruction error of the model with respect to the original input and the second term acts as a regularizer by keeping the latent space close to the prior of, usually, a standard normal distribution. How does this regularization work? Well by constraining our posterior to be close to a standard normal we force the model to obtain generalize mappings for any given data point. If we would allow our model to take on any arbitrary $($complicated$)$ distribution it could easily encode and decode our input to minimize the reconstruction error but we would fail to learn any generalizing properties of the distribution.
 
 <h2>Prior distribution</h2>
 What kind of distribution do we choose as a prior and/or constrain our variational posterior to be? It has to be a distribution that is easy to sample from and since we need to compute the KL-divergence for every produced code of our data examples in our training set with respect to the prior it would be beneficial to perform this integration in closed form. If we take two Gaussians for instance we can simply compute:
@@ -91,10 +89,20 @@ $$\frac{1}{2}\sum^J_{j=1}\big((\mu_j)^2 + \sigma_j^2 -\log(\sigma_j^2) - 1\big)$
 
 Interestingly, more recent it has been shown that it also efficient to approximate the KL divergence with respect to a single batch by taking a Monte Carlo sample, this method is ofcourse useful when there is no analytical solution possible:
 
-$$   \int p(\mathbf{x}) \log \frac{p(\mathbf{x})}{q(\mathbf{x})}d\mathbf{x} \approx \frac{1}{N}\sum^N_{n=1}\log p(\mathbf{x_n}) - \log q(\mathbf{x_n})$$
+$$   \int p(\mathbf{x}) \log \frac{p(\mathbf{x})}{q(\mathbf{x})}d\mathbf{x} \approx \frac{1}{M}\sum^M_{m=1}\log p(\mathbf{x_m}) - \log q(\mathbf{x_m})$$
+
+<h2>Reparameterization trick</h2>
+How do we backpropagate through a stochastic node? Well that will be hard since the gradient will in essence also be a random variable. However, we can move the stochasticity out of the model by reparametrizing such that we have an auxiliary variable that incorporates the stochasticity. By doing this we can take gradients with respect to our parameters and can use standard backpropagation to train our model end-to-end. How does this work? Its quite simple in the end, imagine that our latent space is Gaussian distributed, i.e. $z \sim \mathcal{N}(\mu, \sigma^2)$ then we can also write:
+
+$$ z = \mu + \sigma \epsilon \text{ with }\epsilon \sim \mathcal{N}(0,1) $$ 
+
+Then by moving the sampling to the input layer we create a deterministic mapping and obtain a Monte Carlo estimate which is differentiable with respect to the model parameters:
+
+$$ \mathbb{E}_{\mathcal{N}(\epsilon;0,1)}[f(\mu + \sigma \epsilon)] \approx \frac{1}{M} \sum^M_{m=1}f(\mu + \sigma \epsilon^{(m)}) $$
+
 
 <h2>Experiments</h2>
-Since we can easily sample from a Gaussian, we can also easily sample from our model. Just get a random vector z ~ $ \mathbb{N}(\mu, \sigma)$ and feed it to the decoder, now we see why it is important to choose a prior that is easy to sample from, so that we can construct a posterior where we know that the probability mass lies $($ otherwise the output would be random noise $)$. These are some samples we obtain from the model: <br><br>
+Since we can easily sample from a Gaussian, we can also easily sample from our model. Just get a random vector $z \sim \mathcal{N}(\mu, \sigma^2)$ and feed it to the decoder, now we see why it is important to choose a prior that is easy to sample from, so that we can construct a posterior where we know that the probability mass lies $($ otherwise the output would be random noise $)$. These are some samples we obtain from the model: <br><br>
 
 |![My helpful screenshot]({{ "../../../sample_57.png"}}) | ![My helpful screenshot]({{ "../../../reconstruction_37.png"}}) |![My helpful screenshot]({{ "../../../sample_100.png"}}) |
 |:--:| 
@@ -107,4 +115,4 @@ First on the left are completely random samples with just a two dimensional late
 |:--:| 
 | *Manifold over time* |
 
-All in all, pretty cool stuff if you ask me, there are countless more interesting options than reconstructing hand digits, but for demonstration purposes MNIST always works well. Next time, I'll talk about some limitations of the model and start looking into the other popular generative model from this moment as well, the Generative Adverserial Network. 
+All in all, pretty cool stuff if you ask me, there are countless more interesting options than reconstructing hand digits, but for demonstration purposes MNIST always works well. Next time, I'll talk about some limitations of the model and start looking into the other popular generative model from this moment as well, the Generative Adverserial Network! 
