@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "Variational Autoencoder"
+title: "Variational Auto-encoder"
 date: 2018-02-16
 cover: sample_100.png
 mathjax: true
