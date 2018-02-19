@@ -23,7 +23,7 @@ $$
 
 Where the last step follows from the product rule of probability. So in essence, we have restated the problem in a way that makes it more tractable to optimize $p(\mathbf{x})$ by defining a joint distribution $p(\mathbf{x}, \mathbf{z})$ and then marginalizing over our latent variables $\mathbf{z}$. 
 
-We now turn to Bayes' Theorem to find an expression for our latent variables $\mathbf{z}$ since we need a way to compute this given the original input $\mathbf{x}$ CHECK:
+We now turn to Bayes' Theorem to find an expression for our latent variables $\mathbf{z}$ since we need a way to compute this given the original input $\mathbf{x}$:
 
 $$ \begin{aligned}
 p(\mathbf{z}|\mathbf{x}) &= \frac{p(\mathbf{z})p(\mathbf{x}| \mathbf{z})}{p(\mathbf{x})}\\
