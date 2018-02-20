@@ -1,12 +1,12 @@
 ---
 layout: post
-title: "Variational Auto-encoder"
+title: "Variational auto-encoder"
 date: 2018-02-16
 cover: sample_100.png
 mathjax: true
 excerpt: <br>In most classic Machine Learning problems we are interested in learning a mapping from the input data to a label, more recently however, a lot of interest has sparked in the field of generative modelling. We will look at one of the most popular models in depth, the variational autoencoder. 
 background: ../../../cover2.png
----
+--- 
 In most classic Machine Learning problems we are interested in learning a mapping from the input data to a label, more recently however, a lot of interest has sparked in the field of generative modelling. While classification is concerned with learning a conditional distribution $p(\mathbf{y}|\mathbf{x})$,  generative modelling has as a goal to directly learn the data distribution $p(\mathbf{x})$ such that we can freely reproduce this data. In a world where unlabeled data is ubiquitous and labeled data is sparse/expensive, this seems to be an area of great importance.
 <h2>Probabilistic perspective</h2>
 We have to take a slight detour to arrive at the objective function of the VAE since it has strong theoretical foundations in Bayesian statistics and we can also look at the auto encoding perspective. To start, we have to figure out what variational inference is, why we use a neural network to approximate the parameters and what constraints we put on the model to make it scalable.
