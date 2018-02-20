@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "Variational auto-encoder"
+title: "The theory behind Variational Autoencoders"
 date: 2018-02-16
 cover: sample_100.png
 mathjax: true
