@@ -1,7 +1,7 @@
 ---
 layout: post
 title: "The theory behind Variational Autoencoders"
-date: 2018-02-16
+date: 2018-02-18
 cover: sample_100.png
 mathjax: true
 excerpt: <br>In most classic Machine Learning problems we are interested in learning a mapping from the input data to a label, more recently however, a lot of interest has sparked in the field of generative modelling. We will look at one of the most popular models in depth, the Variational Autoencoder. 
