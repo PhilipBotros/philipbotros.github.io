@@ -58,22 +58,31 @@ Where we have used the fact that $D_{KL}\geq 0$ to derive the lower bound on the
 
 Since both of the terms of the ELBO are computable we have succesfully rewritten the intractable posterior in a way we can approximate it up to a nonnegative KL divergence and turned it into an optimization problem.
 
-<h2>Neural networks</h2>
-Now the word optimization problem has fallen, we instantly think neural networks, since they are unrivaled as universal function approximators at the moment. We start by briefly looking at the non probabilistic auto-encoders.
 <h2>Encoder-Decoder</h2>
-A normal auto-encoder works by transforming an input $\mathbf{x}$ into a latent code $\mathbf{z}$ after which it then decodes the latent code $\mathbf{z}$ back to the input space denoted by the reconstructed input $\mathbf{x}'$.  The encoder is here defined as a nonlinear transformation $f_\theta(\mathbf{x})$ and the decoder as $g_\phi(\mathbf{z})$. By putting some constraints on the transformations that can be made or by adding noise we can force the network to learn meaningful hidden representations.  After reconstructing the input we can update the model by, for instance,  optimizing with respect to the squared Euclidean loss $($if we are talking about images$)$:
+A quick recap on vamilla auto-encoders can provide a different insight into the workings of the VAE. Remember that a normal auto-encoder works by transforming an input $\mathbf{x}$ into a latent code $\mathbf{z}$ after which it then decodes the latent code $\mathbf{z}$ back to the input space denoted by the reconstructed input $\mathbf{x}'$. The encoder is here defined as a nonlinear transformation $f_\theta(\mathbf{x})$ and the decoder as $g_\phi(\mathbf{z})$. By putting some constraints on the transformations that can be made or by adding noise we can force the network to learn meaningful hidden representations.  After reconstructing the input we can update the model by, for instance,  optimizing with respect to the squared Euclidean loss $($if we are talking about images$)$:
 
 $$ \displaystyle\min_{\theta, \phi } ||\mathbf{x} - \mathbf{x'}||^2 + \lambda \Omega$$
 
 Where $\lambda \Omega$ is any arbitrary regularization penalty.
 Although standard auto encoders are very useful for tasks like compression or image denoising, we can not sample from them to generate new examples, for this we need a probabilistic auto encoder.
 <h2>Putting it together</h2>
-Finally we are getting to the crux of the matter, we know that we need to learn a probabilistic mapping $p_{enc}(\mathbf{z|x})$ and a decoder distribution $p_{dec}(\mathbf{x|z})$. From the probabilistic perspective we remember that the encoder distribution $p_{enc}(\mathbf{z|x})$ is intractable and we can use variational inference to approximate this distribution denoted by $q_{\phi}(\mathbf{z|x})$. From the continuous latent space we still need to map back to the input space to generate real samples, this generator network is denoted by $p_{\theta}(\mathbf{x|z})$.
+Finally we are getting to the crux of the matter, we know that we need to learn a probabilistic mapping $p_{enc}(\mathbf{z|x})$, i.e. infer the posterior distribution over the latent variables, and a decoder distribution $p_{dec}(\mathbf{x|z})$, our generative model. Remember that exact inference of the posterior $p_{enc}(\mathbf{z|x})$ is intractable and we use variational methods to approximate the distribution $q_{\phi}(\mathbf{z|x})$.
 A neural network is used for both, to learn the parameters of the variational posterior $q_\phi(\mathbf{z|x})$ and the parameters of the generator network $p\mathbf{_\theta(x|z)}$. The encoder-decoder structure of the VAE works by jointly optimizing the variational lower bound with respect to both the variational parameters $\phi$ and generative parameters $\theta$:
 
 $$ \mathcal{L}(\mathbf{\theta, \phi; x}^{(i)}) = \mathbb{E}_{q_\phi\mathbf{(z|x}^{(i)})}\big[\log p\mathbf{_\theta(x}^{(i)}|\mathbf{z)}\big]-D_{KL}(q_\phi(\mathbf{z|x}^{(i)})||p{\mathbf{_\theta(z))}} $$
 
 Where the first term is simply the reconstruction error of the model with respect to the original input and the second term acts as a regularizer by keeping the latent space close to the prior of, usually, a standard normal distribution. How does this regularization work? Well by constraining our posterior to be close to a standard normal we force the model to obtain generalize mappings for any given data point. If we would allow our model to take on any arbitrary $($complicated$)$ distribution it could easily encode and decode our input to minimize the reconstruction error but we would fail to learn any generalizing properties of the distribution.
+
+<h2>Reparameterization trick</h2>
+Before we can actually perform stochastic gradient descent techniques note that we have stochastic nodes in the network. How do we backpropagate through these stochastic nodes? Since the gradient will in essence also be a random variable standard backpropagation techniques are unsuitable. We can, however, move the stochasticity out of the model by reparameterizing such that we have an auxiliary variable that incorporates the stochasticity. By doing this we can take gradients with respect to our parameters and can use standard backpropagation to train our model end-to-end. How does this work? Its quite simple in the end, imagine that our latent space is Gaussian distributed, i.e. $z \sim \mathcal{N}(\mu, \sigma^2)$ then we can also write:
+
+$$ z = \mu + \sigma \epsilon \text{ with }\epsilon \sim \mathcal{N}(0,1) $$ 
+
+Then by moving the sampling to the input layer we create a deterministic mapping and obtain a Monte Carlo estimate which is differentiable with respect to the model parameters:
+
+$$ \mathbb{E}_{\mathcal{N}(\epsilon;0,1)}[f(\mu + \sigma \epsilon)] \approx \frac{1}{M} \sum^M_{m=1}f(\mu + \sigma \epsilon^{(m)}) $$
+
+Note that reparameterization tricks for discrete random variables have also been developed recently such that we can freely use discrete nodes in VAE architectures.
 
 <h2>Choice of distributions</h2>
 What kind of distribution do we choose as a prior and/or constrain our variational posterior to be? It has to be a distribution where we can easily sample from and since we need to compute the KL-divergence for every produced code of our data examples in our training set with respect to the prior it would be beneficial to perform this integration in closed form. If we take two Gaussians for instance we can simply compute:
@@ -94,27 +103,17 @@ Interestingly, more recent it has been shown that it also efficient to approxima
 
 $$   \int p(\mathbf{x}) \log \frac{p(\mathbf{x})}{q(\mathbf{x})}d\mathbf{x} \approx \frac{1}{M}\sum^M_{m=1}\log p(\mathbf{x_m}) - \log q(\mathbf{x_m})$$
 
-<h2>Reparameterization trick</h2>
-How do we backpropagate through a stochastic node? Since the gradient will in essence also be a random variable standard backpropagation techniques are unsuitable. However, we can move the stochasticity out of the model by reparameterizing such that we have an auxiliary variable that incorporates the stochasticity. By doing this we can take gradients with respect to our parameters and can use standard backpropagation to train our model end-to-end. How does this work? Its quite simple in the end, imagine that our latent space is Gaussian distributed, i.e. $z \sim \mathcal{N}(\mu, \sigma^2)$ then we can also write:
-
-$$ z = \mu + \sigma \epsilon \text{ with }\epsilon \sim \mathcal{N}(0,1) $$ 
-
-Then by moving the sampling to the input layer we create a deterministic mapping and obtain a Monte Carlo estimate which is differentiable with respect to the model parameters:
-
-$$ \mathbb{E}_{\mathcal{N}(\epsilon;0,1)}[f(\mu + \sigma \epsilon)] \approx \frac{1}{M} \sum^M_{m=1}f(\mu + \sigma \epsilon^{(m)}) $$
-
-Note that reparameterization tricks for discrete random variables have also been developed recently such that we can freely use discrete nodes in VAE architectures.
 <h2>Visualizing the manifold</h2>
 Observe how the latent manifold changes from random noise to a meaningful representation of MNIST over time:<br><br>
 
 {:refdef: style="text-align: center;"}
 ![My helpful screenshot]({{ "../../../giff.gif"}})
 {: refdef}
-
+<br>
 <h2>Improving the flexibility of the posterior</h2>
 Since we restrict our posterior to be unimodal in the case of a standard normal prior, a lot of work has been applied to improving the flexibility of the posterior. This can either be done by transforming the posterior by inverse autoregressive flows, a series of simple transformations that iteratively transform a simple distribution into a more complex one. Another option is to improve the flexibility of the prior directly, i.e. by choosing a multimodal prior.
 <h2>Connections to wake-sleep</h2>
-Another interesting point of view to look at is to look at the relation between the wake-sleep algorithm and VAE's. In essence, both are algorithms that perform inference on (assumed) intractable posteriors in deep graphical models. 
+Another interesting point of view to look at is to look at the relation between the wake-sleep algorithm and VAE's. In essence, both are algorithms that perform inference on $($assumed$)$ intractable posteriors in deep graphical models. 
 
 Wake-sleep however, consists of two phases, the 'wake' phase and 'sleep' phase. We optimize the generative model in the wake phase, where we try to reconstruct the inferred hidden representation from the actual data:
 
