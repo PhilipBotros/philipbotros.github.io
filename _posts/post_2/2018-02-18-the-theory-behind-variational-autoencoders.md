@@ -47,10 +47,10 @@ We can derive the objective function by looking at the properties of the KL-dive
 $$ \begin{aligned}
 D_{KL}\big[q(\mathbf{z}|\mathbf{x})||p(\mathbf{z}|\mathbf{x})\big] &= \int q(\mathbf{z}|\mathbf{x}) \log \frac{q(\mathbf{z}|\mathbf{x})}{p(\mathbf{z}|\mathbf{x})}d\mathbf{z} \\
 &= \int q(\mathbf{z}|\mathbf{x}) \log q(\mathbf{z}|\mathbf{x})d\mathbf{z}  - \int q(\mathbf{z}|\mathbf{x}) \log \frac{p(\mathbf{z}) p(\mathbf{x}| \mathbf{z})}{p(\mathbf{x})}d\mathbf{z} \\
-&= \int q(\mathbf{z}|\mathbf{x}) \log \frac{q(\mathbf{z}|\mathbf{x})}{p(\mathbf{z})}d\mathbf{z}  - \int q(\mathbf{z}|\mathbf{x}) \log p(\mathbf{x}| \mathbf{z})d\mathbf{z} + p(\mathbf{x}) \\
-&= D_{KL}\big[q(\mathbf{z}|\mathbf{x})||p(\mathbf{z})\big] - \mathbb{E}_{q\mathbf{(z|x})}\big[\log p(\mathbf{x}| \mathbf{z})\big] + p(\mathbf{x}) \\
-p(\mathbf{x}) - D_{KL}\big[q(\mathbf{z}|\mathbf{x})||p(\mathbf{z}|\mathbf{x})\big]&= \mathbb{E}_{q\mathbf{(z|x})}\big[\log p(\mathbf{x}| \mathbf{z})\big] -  D_{KL}\big[q(\mathbf{z}|\mathbf{x})||p(\mathbf{z})\big] \\
-p(\mathbf{x}) &\geq \mathbb{E}_{q\mathbf{(z|x})}\big[\log p(\mathbf{x}| \mathbf{z})\big] -  D_{KL}\big[q(\mathbf{z}|\mathbf{x})||p(\mathbf{z})\big] 
+&= \int q(\mathbf{z}|\mathbf{x}) \log \frac{q(\mathbf{z}|\mathbf{x})}{p(\mathbf{z})}d\mathbf{z}  - \int q(\mathbf{z}|\mathbf{x}) \log p(\mathbf{x}| \mathbf{z})d\mathbf{z} + \log p(\mathbf{x}) \\
+&= D_{KL}\big[q(\mathbf{z}|\mathbf{x})||p(\mathbf{z})\big] - \mathbb{E}_{q\mathbf{(z|x})}\big[\log p(\mathbf{x}| \mathbf{z})\big] + \log p(\mathbf{x}) \\
+\log p(\mathbf{x}) - D_{KL}\big[q(\mathbf{z}|\mathbf{x})||p(\mathbf{z}|\mathbf{x})\big]&= \mathbb{E}_{q\mathbf{(z|x})}\big[\log p(\mathbf{x}| \mathbf{z})\big] -  D_{KL}\big[q(\mathbf{z}|\mathbf{x})||p(\mathbf{z})\big] \\
+\log p(\mathbf{x}) &\geq \mathbb{E}_{q\mathbf{(z|x})}\big[\log p(\mathbf{x}| \mathbf{z})\big] -  D_{KL}\big[q(\mathbf{z}|\mathbf{x})||p(\mathbf{z})\big] 
 \end{aligned}
 $$ 
 
