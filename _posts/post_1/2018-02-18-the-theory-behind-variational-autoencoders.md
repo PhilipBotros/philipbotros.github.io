@@ -35,7 +35,7 @@ Luckily we can approximate the posterior $p(\mathbf{z}|\mathbf{x})$ using techni
 
 It works by assuming a parameterized distribution Q that we want to be as close as possible to the actual posterior P by defining a particular distance over these two distributions,  usually the KL-divergence:
 
-$$ D_{KL}(P||Q) = \int p(\mathbf{x}) \log \frac{p(\mathbf{x})}{q(\mathbf{x})}d\mathbf{x} $$
+$$D_{KL}(P||Q) = \int p(\mathbf{x}) \log \frac{p(\mathbf{x})}{q(\mathbf{x})}d\mathbf{x}$$
 
 Note that in most cases, recovering the actual posterior is infeasible since we limit ourself to known parameterized distributions which in most cases are not flexible enough to cover the actual posterior. 
 
