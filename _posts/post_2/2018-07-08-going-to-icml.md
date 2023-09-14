@@ -2,8 +2,8 @@
 layout: post
 title: "Accepted to ICML"
 date: 2018-07-08
-cover: icml.jpg
-background: ../../../icml2.png
+cover: /images/post_2/cover.jpg
+background: /images/post_2/bg.png
 ---
 
 Our paper 'Hierarchical VampPrior Variational Fair Auto-Encoder' got accepted to the ICML Theoretical Foundations and Applications of Deep Generative Models workshop. This paper is part of my thesis on Fair Deep Latent Variable Models under the supervision of Dr. Jakub Tomczak. 
