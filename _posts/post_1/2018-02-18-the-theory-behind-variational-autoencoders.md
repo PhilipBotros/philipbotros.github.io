@@ -2,10 +2,10 @@
 layout: post
 title: "The theory behind Variational Autoencoders"
 date: 2018-02-18
-cover: sample_100.png
+cover: /images/post_1/cover.png
 mathjax: true
 excerpt: <br>In most classic Machine Learning problems we are interested in learning a mapping from the input data to a label, more recently however, a lot of interest has sparked in the field of generative modelling. We will look at one of the most popular models in depth, the Variational Autoencoder. 
-background: ../../../cover2.png
+background: /images/post_1/bg.png
 --- 
 In most classic Machine Learning problems we are interested in learning a mapping from the input data to a label, more recently however, a lot of interest has sparked in the field of generative modelling. While classification is concerned with learning a conditional distribution $p(\mathbf{y}|\mathbf{x})$,  generative modelling has as a goal to directly learn the data distribution $p(\mathbf{x})$ such that we can freely reproduce this data. In a world where unlabeled data is ubiquitous and labeled data is sparse/expensive, this seems to be an area of great importance.
 <h2>Probabilistic perspective</h2>
@@ -107,7 +107,7 @@ $$   \int p(\mathbf{x}) \log \frac{p(\mathbf{x})}{q(\mathbf{x})}d\mathbf{x} \app
 Observe how the latent manifold changes from random noise to a meaningful representation of MNIST over time:<br><br>
 
 {:refdef: style="text-align: center;"}
-![My helpful screenshot]({{ "../../../giff.gif"}})
+![My helpful screenshot]({{ "/images/post_1/manifold.gif"}})
 {: refdef}
 <br>
 <h2>Improving the flexibility of the posterior</h2>
