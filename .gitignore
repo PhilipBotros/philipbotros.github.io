@@ -102,3 +102,5 @@ ENV/
 
 # Jekyll
 _site/
+
+*.DS_store
