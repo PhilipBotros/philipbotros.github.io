@@ -305,6 +305,7 @@ PLATFORMS
 DEPENDENCIES
   ffi (= 1.17.1)
   github-pages
+  rouge (~> 3.30)
   webrick (~> 1.7)
 
 BUNDLED WITH

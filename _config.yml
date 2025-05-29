@@ -1,4 +1,5 @@
 name: Machine Learning Blog
 markdown: kramdown
+highlighter: rouge
 theme: jekyll-theme-dinky
 url: https://philipbotros.github.io
