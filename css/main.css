@@ -1,33 +1,149 @@
 body {
-    margin: 60px auto;
+    margin: 30px auto;
     width: 70%;
+    max-width: 800px;
+    line-height: 1.6;
+    color: #333;
+    font-family: Georgia, serif;
+    background-color: #fafafa;
 }
 
-nav{
-    /*background-image: 'sf.jpeg';*/
-    background-color: white;
-    /*position: fixed;*/
+nav {
+    background-color: #fafafa;
     width: 100%;
-    /*border-bottom: 0.8px solid #d5d5d5;*/
-    top: 0;
+    border-bottom: 1px solid #e8e8e8;
+    padding: 10px 0;
 }
 
 nav ul {
-    font: 400 20px/1.2 'Roboto Slab', Georgia, serif;
-    /*padding: 50px;*/
+    font-family: Georgia, serif;
     list-style: none;
-    /*font-weight: Light;*/
-    font-style: bold;
+    margin: 0;
+    padding: 0;
 }
 
 nav ul li {
-    /*display: inline;*/
+    display: inline;
+    margin-right: 20px;
 }
 
 nav li a {
     text-decoration: none;
+    color: #333;
+    font-size: 1em;
+    font-weight: 500;
+}
+
+a {
+    text-decoration: none;
+    color: #0066cc;
+    font-size: 1em;
+    font-family: Georgia, serif;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+h1 {
+    font-family: Georgia, serif;
+    font-size: 1.8em;
+    margin: 0.8em 0 0.5em 0;
     color: #111;
-    font-size: 0.7em;
+    font-weight: bold;
+}
+
+h2 {
+    font-family: Georgia, serif;
+    font-size: 1.5em;
+    margin: 1.2em 0 0.5em 0;
+    color: #111;
+    font-weight: bold;
+}
+
+p {
+    font-family: Georgia, serif;
+    font-size: 1em;
+    line-height: 1.8;
+    margin: 1em 0;
+    color: #333;
+}
+
+.posts {
+    margin: 2em 0;
+}
+
+.posts ul {
+    list-style: none;
+    padding: 0;
+}
+
+.posts li {
+    margin-bottom: 2em;
+    border-bottom: 1px solid #e8e8e8;
+    padding-bottom: 2em;
+}
+
+.posts .title {
+    font-family: Georgia, serif;
+    font-size: 1.4em;
+    margin: 0 0 0.5em 0;
+    color: #222;
+    font-weight: bold;
+}
+
+.posts .excerpt {
+    color: #666;
+    font-size: 0.95em;
+    line-height: 1.6;
+}
+
+.posts .date {
+    color: #999;
+    font-size: 0.85em;
+    margin-bottom: 0.5em;
+}
+
+footer {
+    margin-top: 3em;
+    padding-top: 1em;
+    border-top: 1px solid #e8e8e8;
+    font-size: 0.9em;
+    color: #666;
+}
+
+/* Code blocks */
+pre {
+    background-color: #f5f5f5;
+    border: 1px solid #ddd;
+    border-radius: 3px;
+    padding: 1em;
+    overflow-x: auto;
+}
+
+code {
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 0.9em;
+}
+
+/* Math equations */
+.MathJax_Display {
+    margin: 1em 0;
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+    body {
+        width: 90%;
+    }
+    
+    h1 {
+        font-size: 1.8em;
+    }
+    
+    h2 {
+        font-size: 1.3em;
+    }
 }
 
 footer ul {
@@ -40,54 +156,10 @@ footer ul {
 footer ul li {
     display: inline;
 }
-a {
-    text-decoration: none;
-    color: #111;
-    font-size: 1em;
-    font: 400 14px/1.2 'Open Sans', Georgia, serif;
-    /*font-weight: bold*/
-}
-a:hover {
-    text-decoration: underline;
-}
 
 .active {
     color: #999;
 }
-h1 {
-/*    font-size: 2em;
-    font-family: "Bodoni MT", Didot, "Didot LT STD", "Book Antiqua", Garamond, "Times New Roman", serif;*/
-    font: 400 25px/1.5 'Montserrat', Georgia, serif;
-    /*color: #999;*/
-    /*font-weight: bold;*/
-    /*padding-top: 50px;*/
-}
-h2{
-/*    font-size: 2em;
-    font-family: "Bodoni MT", Didot, "Didot LT STD", "Book Antiqua", Garamond, "Times New Roman", serif;*/
-    font: 400 15px/1.5 'Montserrat', Georgia, serif;
-    /*color: #999;*/
-    /*font-weight: bold;*/
-    /*padding-top: 50px;*/
-}
-
-
-p {
-    font: 400 14px/1.2 'Open Sans', Georgia, serif;
-    font-size: .9em;
-    line-height: 1.4em;
-    /*color: #999;*/
-    /*color: black;*/
-    /*color: #5b5b5b;*/
-}  
-footer {
-    /*width: 100%;  */
-    /*border-top: 0.8px solid #d5d5d5;*/
-    font-size: .8em;
-    clear: both;  
-
-}
-
 
 full img{
     width:800px; height:300px;
@@ -134,10 +206,11 @@ ul.posts {
 
 
 ul,li { 
-        list-style-position:inside;
-        margin:0;
-        padding:0; 
-        font-family: 'Open Sans',` Georgia, serif;}
+    list-style-position:inside;
+    margin:0;
+    padding:0; 
+    font-family: Georgia, serif;
+}
 
 li {
     margin-bottom: 20px;
@@ -165,8 +238,8 @@ p.posts{
 
 .posts li {
     margin-bottom: 10px;
-    font-family: 'Open Sans', Georgia, serif;
+    font-family: Georgia, serif;
     font-size: 0.9em;
     line-height: 1.4em;
-    display: list-item; /* Ensures list items display with their markers */
+    display: list-item;
 }
