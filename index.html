@@ -4,7 +4,6 @@ title: Philip Botros
 ---
 
 <div class="home-content">
-    <h1>Recent Posts</h1>
     <ul class="post-list">
         {% for post in site.posts %}
             <li class="post-item">
@@ -31,6 +30,10 @@ title: Philip Botros
     background-color: #fafafa;
 }
 
+.home-content h1 {
+    font-weight: normal;
+}
+
 .post-list {
     list-style: none;
     padding: 0;
@@ -44,10 +47,10 @@ title: Philip Botros
 }
 
 .post-title {
-    font-family: Georgia, 'Times New Roman', serif;
-    font-size: 1.4em;
+    font-family: Georgia, serif;
+    font-size: 1.5em;
     margin: 0 0 0.5em 0;
-    font-weight: normal;
+    font-weight: bold;
 }
 
 .post-title a {
