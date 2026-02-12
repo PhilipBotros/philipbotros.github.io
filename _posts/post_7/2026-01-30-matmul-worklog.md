@@ -5,14 +5,12 @@ date: 2026-01-08
 cover: /images/post_6/cover.jpg
 background: /images/post_6/bg.jpg
 mathjax: true
-excerpt: <br> A look at the CPython execution model and showing two ways to run CUDA from Python, using ctypes for raw access and PyTorch custom operators for deeper integration.
+excerpt: <br> How to get to the top percentile of a mat mul kernel (worklog)
 ---
 This post documents my journey optimizing a CUDA matrix multiplication kernel, starting from a naive tiled implementation and ending up in the top 1% of performance on a T4 GPU on LeetGPU (LINK).
 {:refdef: style="text-align: center;"}
-![Matmul Optimization Journey]({{ "/images/post_matmul/optimization_journey.png"}})
+![Matmul Optimization Journey]({{ "/images/post_7/perc_99.png"}}){: width="50%" style="border-radius: 12px;" }
 {: refdef}
-
-Add picture of percentile stuff here,
 
 There's loads of highly illustrative posts about the internals of GPUs, see (1) and (2).
 To recap, at a high level, fast GPU kernels are built by keeping data local, maximizing arithmetic intensity, and exposing enough parallelism to hide memory latency.
@@ -53,13 +51,21 @@ FLOPs/byte, you'd need 32.4 TB/s of memory bandwidth to reach peak compute so yo
 
 This is a lot as every load comes from slow global memory, and there's no data reuse across threads. If two threads need the same element from A or B, they both load it separately. (REWRITE)
 
+{:refdef: style="text-align: center;"}
+![Matmul kernel 1]({{ "/images/post_7/kernel_1.png"}})
+{: refdef}
+
 **Runtime: 956.41 ms percentile 16.9**
 
 Unsurprisingly we are in the bottom quartile of performance given this naive implementation, time to do better!
 
 <h2>Optimization 1: Tiled Matmul with Shared Memory</h2>
-The starting point to reduce global memory traffic is a textbook tiled matrix multiplication. We divide the problem into tiles and sequentially load tiles into shared memory and compute partial accumulations until the full matrices have been processed. At every tile step, each thread loads one element into shared memory, we synchronize, then each thread computes one (partial) output element.
+The starting point to reduce global memory traffic is a textbook tiled matrix multiplication. We divide the problem into tiles and sequentially load tiles into shared memory and compute partial accumulations until the full matrices have been processed. At every tile step, each thread loads one element into shared memory, we synchronize, then each thread computes one (partial) output element. Graphically this looks like:
+{:refdef: style="text-align: center;"}
+![Matmul kernel 2]({{ "/images/post_7/kernel_2.png"}})
+{: refdef}
 
+The code changes are relatively simple, xyz.
 ```cuda
 #define TILE_SIZE 16
 
@@ -89,9 +95,13 @@ __global__ void matrix_multiplication_kernel(const float* A, const float* B, flo
 ```
 The win here over the fully naive implementation is that we're reusing data across threads via shared memory. Without tiling, each thread would load an entire row of A and column of B from global memory. With tiling, we cooperatively load tiles into shared memory and reuse these across the block.
 
-Each thread still computes a single output element of $C$ and therefore performs approximately $2N$ FLOPs. The key difference is that global memory loads are now amortized across the block. At each tile iteration, every active thread loads one FP32 value from $A$ and one from $B$, for a total of $8$ bytes from global memory. Since the dot product spans $\lceil N / T \rceil$ tiles, each thread loads $8 \times \lceil N / T \rceil$ bytes in total. This results in a per-thread arithmetic intensity of $$\frac{2N}{8 \lceil N / T \rceil} \approx \frac{T}{4}.$$ For a tile size of $T = 16$, this gives an arithmetic intensity of $4.0$ FLOPs per byte. This is a 16x increase over the naive kernel!
+Each thread still computes a single output element of $C$ and therefore performs approximately $2N$ FLOPs. The key difference is that global memory loads are now amortized across the block. At each tile iteration, every active thread loads one FP32 value from $A$ and one from $B$, for a total of $8$ bytes from global memory. Since the dot product spans $\lceil N / T \rceil$ tiles, each thread loads $8 \times \lceil N / T \rceil$ bytes in total. This results in a per-thread arithmetic intensity of
 
-An interesting observation is that pushing the tile size to the maximum supported by a single block (1024 threads, i.e. T = 32) doubles the arithmetic intensity to 8.0 FLOPs/byte, yet performance on a T4 actually decreases. This highlights an important caveat of roofline-style reasoning: increasing arithmetic intensity does not automatically translate to higher throughput.
+$$\frac{2N}{8 \lceil N / T \rceil} \approx \frac{T}{4}.$$
+
+For a tile size of $T = 16$, this gives an arithmetic intensity of $4.0$ FLOPs per byte. This is a 16x increase over the naive kernel!
+
+An interesting observation is that pushing the tile size to the maximum supported by a single block (1024 threads, i.e. $T = 32$) doubles the arithmetic intensity to 8.0 FLOPs/byte, yet performance on a T4 actually decreases. This highlights an important caveat of roofline-style reasoning: increasing arithmetic intensity does not automatically translate to higher throughput.
 
 In this regime, the kernel is no longer limited by global memory bandwidth. Instead, hardware characteristics begin to dominate: large blocks reduce scheduling flexibility, often limiting the SM to a single resident block, which in turn reduces the total number of active warps available to hide latency. Additionally, larger tiles typically increase register pressure and synchronization cost, further constraining occupancy. The net effect is that, despite improved data reuse, the GPU is less able to keep its execution pipelines busy.
 
@@ -110,6 +120,10 @@ The key for the next optimization is that each thread can compute multiple outpu
 #define TN 4    // Thread tile cols
 ```
 We are now covering a block of 64x64 where every thread computes a micro-tile of 4x4. We're still using threadblocks of 16x16 like in the previous kernel but the effective size has quadrupled. Furthermore, we decouple the reduction dimension (BK) from the block dimensions. Once we expand the output tile to 64×64, keeping the reduction tile square would drastically increase shared memory usage and register pressure. Using a smaller BK is necessary to make this larger tile shape work without collapsing occupancy. 
+
+{:refdef: style="text-align: center;"}
+![Matmul kernel 3]({{ "/images/post_7/kernel_3.png"}})
+{: refdef}
 
 We now have to set up thread specific accumulator tiles (in registers) and we can do a form of cooperative loading(BOLD). Indexing becomes slightly more involved as we now have another dimension to account for (micro-tile).  
 
@@ -267,7 +281,21 @@ The third kernel uses a larger block tile ($64 \times 64$) and further optimizes
 
 Every thread now does $2N \times TM \times TN$ FLOPs while loading the same amount of bytes as the previous kernel: $8 \times \lceil N / T \rceil$. 
 
-Global Memory Intensity (The Roofline AI)The intensity relative to global memory depends on the Block Tile size ($BM \times BN$).FLOPs per block iteration: $BM \times BN \times BK \times 2 = 64 \times 64 \times 8 \times 2 = 65,536$.Bytes per block iteration: $(BM \times BK + BN \times BK) \times 4 = (64 \times 8 + 64 \times 8) \times 4 = 4,096$ Calculation: $\frac{64 \times 64}{2(64 + 64)} = \frac{4096}{256} = 16.0$.
+{:refdef: style="text-align: center;"}
+![Memory Hierarchy]({{ "/images/post_7/mem_hierarchy.png"}})
+{: refdef}
+
+**Global Memory Intensity (The Roofline AI)**
+
+The intensity relative to global memory depends on the Block Tile size ($BM \times BN$).
+
+FLOPs per block iteration: $BM \times BN \times BK \times 2 = 64 \times 64 \times 8 \times 2 = 65{,}536$.
+
+Bytes per block iteration: $(BM \times BK + BN \times BK) \times 4 = (64 \times 8 + 64 \times 8) \times 4 = 4{,}096$.
+
+Calculation:
+
+$$\frac{64 \times 64}{2(64 + 64)} = \frac{4096}{256} = 16.0.$$
 
 AI stays the same!
 
@@ -337,6 +365,7 @@ for (int t = 0; t < num_tiles; t++) {
 }
 ```
 This gave a modest speedup by hiding some memory latency behind computation. This did not hold when the tile size was increased!
+
 **Runtime: 190.58 ms percentile 92.7**
 
 <h2>Optimization 5: Larger Tiles</h2>
@@ -371,6 +400,7 @@ More work per thread means better register reuse and fewer synchronization point
 #define BK 16
 #define TM 12
 #define TN 12
+// Each thread: 144 outputs
 ```
 **Runtime: 136.86 ms percentile 95.7**
 
@@ -448,6 +478,7 @@ Not everything I tried improved performance:
 | Outputs per thread | 144 (12×12) |
 | Outputs per block | 36,864 (192×192) |
 | Shared memory | 24 KB |
+
 <h2>Summary</h2>
 
 | Optimization | Key Insight | Impact |
