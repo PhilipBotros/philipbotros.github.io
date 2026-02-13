@@ -7,12 +7,12 @@ background: /images/post_6/bg.jpg
 mathjax: true
 excerpt: <br> How to get to the top percentile of a mat mul kernel (worklog)
 ---
-This post documents my journey optimizing a CUDA matrix multiplication kernel, starting from a naive tiled implementation and ending up in the top 1% of performance on a T4 GPU on LeetGPU (LINK).
+This post documents my journey optimizing a CUDA matrix multiplication kernel, starting from a naive tiled implementation and ending up in the top 1% of performance on a T4 GPU on [LeetGPU](https://leetgpu.com/challenges/matrix-multiplication).
 {:refdef: style="text-align: center;"}
 ![Matmul Optimization Journey]({{ "/images/post_7/perc_99.png"}}){: width="50%" style="border-radius: 12px;" }
 {: refdef}
 
-There's loads of highly illustrative posts about the internals of GPUs, see (1) and (2).
+There's loads of highly illustrative posts about the internals of GPUs, see [1](https://siboehm.com/articles/22/CUDA-MMM) and [2](https://www.aleksagordic.com/blog/matmul).
 To recap, at a high level, fast GPU kernels are built by keeping data local, maximizing arithmetic intensity, and exposing enough parallelism to hide memory latency.
 
 To give a measure of the differences:
@@ -41,7 +41,7 @@ __global__ void matrix_multiplication_kernel(const float* A, const float* B, flo
 }
 ```
 
-Each thread computes one output element of the matrix C by loading an entire row from A and an entire column from B from global memory. If we assume they're both square with a size of N, this means every active thread loads 4N bytes from A and 4N bytes from B given FP32 inputs (ignoring the write back to HBM FIX THIS). Every thread then does N multiplications and N additions. A good way of measuring algorithmic performance is arithmetic intensity. This translates to the number of FLOPs performed for every byte loaded from global memory. The higher this number the more we are bottlenecked by compute speed versus HBM bandwidth. The formula for this is:
+Each thread computes one output element of the matrix C by loading an entire row from A and an entire column from B from global memory. If we assume they're both square with a size of N, this means every active thread loads 4N bytes from A and 4N bytes from B given FP32 inputs (ignoring the write back to HBM). Every thread then does N multiplications and N additions. A good way of measuring algorithmic performance is arithmetic intensity. This translates to the number of FLOPs performed for every byte loaded from global memory. The higher this number the more we are bottlenecked by compute speed versus HBM bandwidth. The formula for this is:
 
 $$ AI = \frac{\text{FLOPs}}{\text{Bytes Transferred}} $$
 
@@ -344,6 +344,11 @@ Load tile 0 → [stall] → Compute tile 0 → Load tile 1 → [stall] → Compu
 
 With double buffering, we use two sets of shared memory and load the next tile while computing on the current one:
 
+```
+Load tile 0 → [stall] → Load tile 1 + Compute tile 0 → Load tile 2 + Compute tile 1 → ...
+```
+In code this looks roughly like:
+
 ```cuda
 __shared__ float tile_A[2][BM][BK];
 __shared__ float tile_B[2][BK][BN];
@@ -364,7 +369,7 @@ for (int t = 0; t < num_tiles; t++) {
     __syncthreads();
 }
 ```
-This gave a modest speedup by hiding some memory latency behind computation. This did not hold when the tile size was increased!
+This gave a modest speedup by hiding some memory latency behind computation. This did not hold when the tile size was increased! Also note that the T4 does not support async copies (`cp.async`), so the load and compute phases cannot truly overlap at the hardware level. Both compete for the same execution resources. On newer architectures (Ampere and beyond), `cp.async` offloads global-to-shared memory copies to dedicated hardware, freeing the warp to execute compute instructions while the copy completes in the background.
 
 **Runtime: 190.58 ms percentile 92.7**
 
@@ -405,7 +410,7 @@ More work per thread means better register reuse and fewer synchronization point
 **Runtime: 136.86 ms percentile 95.7**
 
 <h2>Optimization 6: Remove double buffering with increasing tile size</h2>
-Tended to not work after we increased tile sizes. Again, this could be an occupancy problem. We now use double the amount of shared memory to both store the load and compute tile and the larger the tile the more additional memory double buffering consumes.
+Tended to not work after we increased tile sizes. Again, this could be an occupancy problem. We now use double the amount of shared memory to both store the load and compute tile and the larger the tile the more additional memory double buffering consumes. Also, as noted before, T4 does not support `cp.async`, limiting the effectiveness of async copy pipelines.
 
 **Runtime: 123.21 ms percentile 97.0**
 
@@ -451,11 +456,26 @@ Now when writing row 0, thread 0 writes column 0, thread 1 writes column 1, thre
 
 Two final compiler-level tweaks helped push the kernel into the top 1%:
 
-	•	__restrict__:
-By marking input pointers as __restrict__, we tell the compiler that these pointers do not alias. This removes the need for conservative reloads and allows the compiler to keep values in registers across loop iterations. In a compute-heavy kernel like GEMM, this directly reduces redundant global memory traffic and enables more aggressive instruction scheduling.
+**`__restrict__`**: By marking input pointers as `__restrict__`, we tell the compiler that these pointers do not alias. This removes the need for conservative reloads and allows the compiler to keep values in registers across loop iterations. In a compute-heavy kernel like GEMM, this directly reduces redundant global memory traffic and enables more aggressive instruction scheduling.
 
-	•	#pragma unroll:
-The innermost loops have a small, compile-time–known trip count (e.g. BK, TM, TN). Forcing unrolling eliminates loop control overhead and, more importantly, exposes independent instructions to the compiler. This increases instruction-level parallelism, improves register reuse, and gives the scheduler more freedom to overlap arithmetic with memory operations.
+```cuda
+__global__ void matmul(const float* __restrict__ A,
+                       const float* __restrict__ B,
+                       float* __restrict__ C, ...) {
+```
+
+**`#pragma unroll`**: The innermost loops have a small, compile-time-known trip count (e.g. BK, TM, TN). Forcing unrolling eliminates loop control overhead and, more importantly, exposes independent instructions to the compiler. This increases instruction-level parallelism, improves register reuse, and gives the scheduler more freedom to overlap arithmetic with memory operations.
+
+```cuda
+#pragma unroll
+for (int k = 0; k < BK; k++) {
+    #pragma unroll
+    for (int i = 0; i < TM; i++)
+        #pragma unroll
+        for (int j = 0; j < TN; j++)
+            acc[i][j] += a_frag[i] * b_frag[j];
+}
+```
 
 **Runtime: 108.89 ms percentile 99.2**
 
@@ -465,15 +485,15 @@ Not everything I tried improved performance:
 
 - **float4 vectorized loads**: Alignment issues with BK=8 caused crashes. Would need BK=16 or careful padding.
 - **Double buffering with large tiles**: The added complexity wasn't worth it for the final configuration.
-- **Bank conflict padding**: Consistently reduced runtime with ~10%
+- **Bank conflict padding**: Consistently increased runtime by ~10%
 
 <h2>Final Configuration</h2>
 
 | Parameter | Value |
 |-----------|-------|
 | TILE_SIZE | 16 |
-| BN | 12 |
-| TN | 192 |
+| BN | 192 |
+| TN | 12 |
 | Threads per block | 256 (16×16) |
 | Outputs per thread | 144 (12×12) |
 | Outputs per block | 36,864 (192×192) |
@@ -512,8 +532,6 @@ And those two GPUs sit in very different regimes.
 Ideally, you would use the latest features of this GPU to make the difference even larger. TMA, latest tensor cores etc.
 
 <h2>Resources</h2>
-SBOEHM (classic)
-See my cuda repo -> link to it.
-
-
-This is it now
+- [How to Optimize a CUDA Matmul Kernel for cuBLAS-like Performance](https://siboehm.com/articles/22/CUDA-MMM) - Simon Boehm
+- [Matrix Multiplication on GPU](https://www.aleksagordic.com/blog/matmul) - Aleksa Gordic
+- [My CUDA repo](https://github.com/PhilipBotros/cudafun/tree/main/resources)
