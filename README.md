@@ -4,6 +4,26 @@ You can use the [editor on GitHub](https://github.com/PhilipBotros/philipbotros.
 
 Whenever you commit to this repository, GitHub Pages will run [Jekyll](https://jekyllrb.com/) to rebuild the pages in your site, from the content in your Markdown files.
 
+### Local Preview
+
+Prerequisites: [Homebrew](https://brew.sh/)
+
+```bash
+# Install Ruby 3.3
+brew install ruby@3.3
+
+# Add Ruby to your PATH (add to ~/.zshrc to persist)
+export PATH="/opt/homebrew/opt/ruby@3.3/bin:$PATH"
+
+# Install dependencies
+bundle install
+
+# Start the local server with live reload
+bundle exec jekyll serve --livereload
+```
+
+The site will be available at `http://localhost:4000`.
+
 ### Markdown
 
 Markdown is a lightweight and easy-to-use syntax for styling your writing. It includes conventions for
