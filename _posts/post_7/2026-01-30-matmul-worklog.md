@@ -12,6 +12,14 @@ This post documents my journey optimizing a CUDA matrix multiplication kernel, s
 ![Matmul Optimization Journey]({{ "/images/post_7/perc_99.png"}}){: width="50%" style="border-radius: 12px;" }
 {: refdef}
 
+Performance is measured with M=8192, N=6144, K=4096 on a T4 GPU. Before diving in, let's establish the target. The total work is $2 \times 8192 \times 6144 \times 4096 \approx 412$ billion FLOPs. The T4's peak FP32 throughput is 8.1 TFLOPS, giving a theoretical minimum runtime of
+
+$$\frac{412 \times 10^9}{8.1 \times 10^{12}} \approx 50.9 \text{ ms.}$$
+
+Is memory bandwidth the bottleneck? The two input matrices total $(8192 \times 6144 + 6144 \times 4096) \times 4 \approx 302$ MB, giving an arithmetic intensity of $\sim$1365 FLOPs/byte. The T4's roofline crossover is $8.1 \times 10^{12} / 320 \times 10^{9} \approx 25.3$ FLOPs/byte, so at these dimensions the problem is firmly compute-bound. The floor is set by FP32 throughput, not memory bandwidth.
+
+In practice, cuBLAS typically achieves 85-95% of peak FP32, putting it around 54-60 ms for this problem. That's our realistic target.
+
 There are many highly illustrative posts about the internals of GPUs, see [1](https://siboehm.com/articles/22/CUDA-MMM) and [2](https://www.aleksagordic.com/blog/matmul).
 To recap, at a high level, fast GPU kernels are built by keeping data in local fast memory, maximizing arithmetic intensity, and exposing enough parallelism to hide memory latency.
 
@@ -526,10 +534,7 @@ Not everything I tried improved performance:
 
 The biggest lesson: memory access patterns dominate GPU performance. Both coalesced reads and coalesced writes matter. The strided thread layout was counterintuitive at first, but it's the key to getting both right simultaneously.
 
-How far from cuBLAS?
-Do test on T4.
-
-<h2>Transfer to newer GPUs</h2>
+<h2>Extra: Transfer to newer GPUs</h2>
 As the T4 is ancient, let's try this exact kernel on the H100 and B200. As an illustration the specs compared to a T4:
 
 | Spec | T4 | H100 SXM | B200 |
