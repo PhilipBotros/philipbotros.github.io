@@ -12,17 +12,14 @@ This post documents my journey optimizing a CUDA matrix multiplication kernel, s
 ![Matmul Optimization Journey]({{ "/images/post_7/perc_99.png"}}){: width="50%" style="border-radius: 12px;" }
 {: refdef}
 
-There's loads of highly illustrative posts about the internals of GPUs, see [1](https://siboehm.com/articles/22/CUDA-MMM) and [2](https://www.aleksagordic.com/blog/matmul).
-To recap, at a high level, fast GPU kernels are built by keeping data local, maximizing arithmetic intensity, and exposing enough parallelism to hide memory latency.
+There are many highly illustrative posts about the internals of GPUs, see [1](https://siboehm.com/articles/22/CUDA-MMM) and [2](https://www.aleksagordic.com/blog/matmul).
+To recap, at a high level, fast GPU kernels are built by keeping data in local fast memory, maximizing arithmetic intensity, and exposing enough parallelism to hide memory latency.
 
-To give a measure of the differences:
-Global Memory: (Huge capacity, but 400–800 cycles away).
+<!-- As we'll mostly be focusing on optimising the use of the memory hierarchy, let's look at an illustration first:
+{:refdef: style="text-align: center;"}
+![Memory Hierarchy]({{ "/images/post_7/mem_hierarchy_intro.png"}})
+{: refdef} -->
 
-Shared Memory: (Small, but only ~20–30 cycles away).
-
-Registers: (Tiny, but ~1 cycle away).
-
-Maybe a better illustration above (flash-attention) ?
 
 <h2>Starting Point: Fully Naive Implementation</h2>
 
@@ -41,19 +38,20 @@ __global__ void matrix_multiplication_kernel(const float* A, const float* B, flo
 }
 ```
 
-Each thread computes one output element of the matrix C by loading an entire row from A and an entire column from B from global memory. If we assume they're both square with a size of N, this means every active thread loads 4N bytes from A and 4N bytes from B given FP32 inputs (ignoring the write back to HBM). Every thread then does N multiplications and N additions. A good way of measuring algorithmic performance is arithmetic intensity. This translates to the number of FLOPs performed for every byte loaded from global memory. The higher this number the more we are bottlenecked by compute speed versus HBM bandwidth. The formula for this is:
-
-$$ AI = \frac{\text{FLOPs}}{\text{Bytes Transferred}} $$
-
-Arithmetic Intensity:
-2N FLOPs / 8N bytes = 0.25 FLOPs/byte. This is extremely low as for every FLOP we now have to load 4 bytes! The T4 GPU has a peak bandwidth of ~320 GB/s and peak compute of ~8.1 TFLOPS. At 0.25
-FLOPs/byte, you'd need 32.4 TB/s of memory bandwidth to reach peak compute so you're memory-bound by a factor of ~100×.
-
-This is a lot as every load comes from slow global memory, and there's no data reuse across threads. If two threads need the same element from A or B, they both load it separately. (REWRITE)
+Each thread computes one output element of the matrix C by loading an entire row from A and an entire column from B from global memory. If we assume they're both square with a size of N, this means every active thread loads 4N bytes from A and 4N bytes from B given FP32 inputs (ignoring the write back to HBM). Every thread does N multiplications and N additions. 
 
 {:refdef: style="text-align: center;"}
 ![Matmul kernel 1]({{ "/images/post_7/kernel_1.png"}})
 {: refdef}
+
+A good way of measuring algorithmic performance is arithmetic intensity. This translates to the number of FLOPs performed for every byte loaded from global memory. The higher this number the more we are bottlenecked by compute speed versus HBM bandwidth. The formula for this is:
+
+$$ AI = \frac{\text{FLOPs}}{\text{Bytes Transferred}} $$
+
+Arithmetic Intensity for this kernel:
+
+
+2N FLOPs / 8N bytes = 0.25 FLOPs/byte. This is extremely low, for every FLOP we need to load 4 bytes! The T4 GPU has a peak bandwidth of ~320 GB/s and peak compute of ~8.1 TFLOPS. At 0.25 FLOPs/byte, bandwidth limits us to $0.25 \times 320 = 80$ GFLOPS, which is less than 1% of peak compute. We'll aim to close this gap over the course of this post.
 
 **Runtime: 956.41 ms percentile 16.9**
 
@@ -65,7 +63,7 @@ The starting point to reduce global memory traffic is a textbook tiled matrix mu
 ![Matmul kernel 2]({{ "/images/post_7/kernel_2.png"}})
 {: refdef}
 
-The code changes are relatively simple, xyz.
+The code changes are relatively simple: we need to initialize shared memory, and at every step cooperatively load a tile and do the partial multiplication.
 ```cuda
 #define TILE_SIZE 16
 
@@ -101,7 +99,7 @@ $$\frac{2N}{8 \lceil N / T \rceil} \approx \frac{T}{4}.$$
 
 For a tile size of $T = 16$, this gives an arithmetic intensity of $4.0$ FLOPs per byte. This is a 16x increase over the naive kernel!
 
-An interesting observation is that pushing the tile size to the maximum supported by a single block (1024 threads, i.e. $T = 32$) doubles the arithmetic intensity to 8.0 FLOPs/byte, yet performance on a T4 actually decreases. This highlights an important caveat of roofline-style reasoning: increasing arithmetic intensity does not automatically translate to higher throughput.
+An interesting observation is that pushing the tile size to the maximum supported by a single block (1024 threads, i.e. $T = 32$) doubles the arithmetic intensity to 8.0 FLOPs/byte, yet performance on a T4 actually decreases. This highlights an important caveat of roofline-style (never introduced) reasoning: increasing arithmetic intensity does not automatically translate to higher throughput.
 
 In this regime, the kernel is no longer limited by global memory bandwidth. Instead, hardware characteristics begin to dominate: large blocks reduce scheduling flexibility, often limiting the SM to a single resident block, which in turn reduces the total number of active warps available to hide latency. Additionally, larger tiles typically increase register pressure and synchronization cost, further constraining occupancy. The net effect is that, despite improved data reuse, the GPU is less able to keep its execution pipelines busy.
 
@@ -328,6 +326,23 @@ for (int i = tid; i < BM * BK; i += num_threads) {
 }
 ```
 
+```
+// BM=64, BK=8, 256 threads, tile has 512 elements → 2 iterations per thread
+// First iteration (i = tid):
+Thread 0   loads tile_A[0][0]  → A[row+0, k+0]
+Thread 1   loads tile_A[0][1]  → A[row+0, k+1]
+...
+Thread 7   loads tile_A[0][7]  → A[row+0, k+7]
+Thread 8   loads tile_A[1][0]  → A[row+1, k+0]
+...
+Thread 255 loads tile_A[31][7] → A[row+31, k+7]
+
+// Second iteration (i = tid + 256):
+Thread 0   loads tile_A[32][0] → A[row+32, k+0]
+...
+Thread 255 loads tile_A[63][7] → A[row+63, k+7]
+```
+
 Now at any given moment, thread 0 loads address 0, thread 1 loads address 1, thread 2 loads address 2. The memory controller coalesces these into a single wide transaction.
 
 As you can see the speedup is very modest here. There was a larger amount of difference when increasing the tile sizes (96.3 vs 97.0).
@@ -517,19 +532,19 @@ Do test on T4.
 <h2>Transfer to newer GPUs</h2>
 As the T4 is ancient, let's try this exact kernel on the H100 and B200. As an illustration the specs compared to a T4:
 
-We now get the 91.6th percentile on the H100 and 82.8 on the B200, which is unsurprising as the specs are very different.
+| Spec | T4 | H100 SXM | B200 |
+|------|-----|----------|------|
+| Architecture | Turing (2018) | Hopper (2022) | Blackwell (2024) |
+| FP32 TFLOPS | 8.1 | 67 | ~80 |
+| Memory | 16 GB GDDR6 | 80 GB HBM3 | 192 GB HBM3e |
+| Memory BW | 320 GB/s | 3.35 TB/s | 8 TB/s |
+| SMs | 40 | 132 | 160 |
 
-Interestingly, the speedup is already 8x as we go to 14.53 ms and 12.48 ms on the newer GPUs. It’s one of the beautiful things about CUDA: its programming model abstracts how work is scheduled and executed, so as hardware evolves, the same kernel can automatically benefit from more SMs, wider memory paths, and better schedulers. Of course, this doesn’t mean the kernel is anywhere near optimal on H100 or B200 (especially given tons of new features), but it highlights how well CUDA’s core abstraction layer has held up across generations.
+Running the exact same kernel gives us the 88.7th percentile on the H100 and 81.5th on the B200, with runtimes of 14.45 ms and 12.48 ms respectively, roughly an 8x speedup over the T4. This is one of the nice things about CUDA: the programming model abstracts how work is scheduled and executed, so the same kernel automatically benefits from more SMs, wider memory paths, and better schedulers. Of course, the kernel is nowhere near optimal on these GPUs, but it highlights how well CUDA’s abstraction layer holds up across generations.
 
-Decreasing BN to 8 here works actually, why:
+The percentile drop also makes sense. Tile parameters tuned for the T4 are not ideal here. BN trades off two things that scale very differently across these GPUs: arithmetic intensity (how much math per byte loaded) and occupancy (how many warps can stay resident, dominated by register pressure). The T4 and H100/B200 sit in very different regimes, so the optimal tile sizes shift. Decreasing BK to 8 on the newer GPUs already recovers some performance, bringing the H100 to 91.9 and the B200 to 86.3.
 
-BN is trading off two things that scale very differently across T4 vs H100/B200:
-	1.	How much math you do per byte you load (reuse / arithmetic intensity)
-	2.	How many warps you can keep resident (occupancy / latency hiding), which is dominated by register pressure (and sometimes spills)
-
-And those two GPUs sit in very different regimes. 
-
-Ideally, you would use the latest features of this GPU to make the difference even larger. TMA, latest tensor cores etc.
+To truly exploit these architectures you would want to use their native features: TMA for hardware-accelerated tile loads, newer tensor core instructions, and larger shared memory capacities.
 
 <h2>Resources</h2>
 - [How to Optimize a CUDA Matmul Kernel for cuBLAS-like Performance](https://siboehm.com/articles/22/CUDA-MMM) - Simon Boehm
