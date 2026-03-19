@@ -12,24 +12,36 @@ This post documents my journey optimizing a CUDA matrix multiplication kernel, s
 ![Matmul Optimization Journey]({{ "/images/post_7/perc_99.png"}}){: width="50%" style="border-radius: 12px;" }
 {: refdef}
 
-Performance is measured with M=8192, N=6144, K=4096 on a T4 GPU. Before diving in, let's establish the target. The total work is $2 \times 8192 \times 6144 \times 4096 \approx 412$ billion FLOPs. The T4's peak FP32 throughput is 8.1 TFLOPS, giving a theoretical minimum runtime of
-
-$$\frac{412 \times 10^9}{8.1 \times 10^{12}} \approx 50.9 \text{ ms.}$$
-
-Is memory bandwidth the bottleneck? The two input matrices total $(8192 \times 6144 + 6144 \times 4096) \times 4 \approx 302$ MB, giving an arithmetic intensity of $\sim$1365 FLOPs/byte. The T4's roofline crossover is $8.1 \times 10^{12} / 320 \times 10^{9} \approx 25.3$ FLOPs/byte, so at these dimensions the problem is firmly compute-bound. The floor is set by FP32 throughput, not memory bandwidth.
-
-In practice, cuBLAS typically achieves 85-95% of peak FP32, putting it around 54-60 ms for this problem. That's our realistic target.
-
 There are many highly illustrative posts about the internals of GPUs, see [1](https://siboehm.com/articles/22/CUDA-MMM) and [2](https://www.aleksagordic.com/blog/matmul).
 To recap, at a high level, fast GPU kernels are built by keeping data in local fast memory, maximizing arithmetic intensity, and exposing enough parallelism to hide memory latency.
 
-<!-- As we'll mostly be focusing on optimising the use of the memory hierarchy, let's look at an illustration first:
+As we'll mostly be focusing on optimising the use of the memory hierarchy, it's useful to see why:
 {:refdef: style="text-align: center;"}
 ![Memory Hierarchy]({{ "/images/post_7/mem_hierarchy_intro.png"}})
-{: refdef} -->
+{: refdef}
+
+As you can see there is a ~30x speedup fetching elements from a lower memory hierarchy. Obviously the challenge is that this memory is local and orders of magnitude smaller than HBM. Given this, the challenge is to rewrite algorithms into sub problemssuch that data is kept local to avoid expensive round trips to higher memory. This is easier for problems with natural data locality. Matrix multiplication is a good example, since we can split the problem in independent tiles (mapping great onto the SM architecture). This is also the idea behind algorithms like Flash Attention, which restructure the attention computation to work on tiles that fit in SRAM. 
+
+Another important thing to note, GPUs have a ridiculous amount of FLOPs and it's growing much faster than the amount of memory and memory bandwidth. Stephen Jones from Nvidia gives a good explanation in this lecture. Fundamentally, SRAM needs 6 transistors per bit so fast memory takes up a lot of space on the die and the bandwidth is bottlenecked by the speed of light. There's no reason at this point to believe this is going to change soon so the focus on memory optimization will stay relevant.
+
+TODO: Add slide Bill Dally or Stephen Jones, also link to Stephen Jones presentation above
+
+### Setting the target
+
+Before diving in, let's establish some targets. Performance is measured with M=8192, N=6144, K=4096 on a T4 GPU. Given a complexity of O(MNK) for a matrix multiplication and a single FMA entailing 2 operations the total work is $2 \times 8192 \times 6144 \times 4096 \approx 412$ billion FLOPs. The T4's peak FP32 throughput is 8.1 TFLOPS, giving a theoretical minimum runtime of
+
+$$\frac{412 \times 10^9}{8.1 \times 10^{12}} \approx 50.9 \text{ ms.}$$
+
+The two input matrices total $(8192 \times 6144 + 6144 \times 4096) \times 4 \approx 302$ MB, giving an arithmetic intensity (FLOPs per byte transferred) of $\sim$1365 FLOPs/byte. The T4's memory bandwidth is 320 GB/s, so its [roofline](https://modal.com/gpu-glossary/perf/roofline-model) crossover is $8.1 \times 10^{12} / 320 \times 10^{9} \approx 25.3$ FLOPs/byte, so at these dimensions the problem is firmly compute-bound. The floor is set by FP32 throughput, not memory bandwidth.
+
+In practice, cuBLAS typically achieves 85-95% of peak FP32, putting it around 54-60 ms for this problem.
 
 
 <h2>Starting Point: Fully Naive Implementation</h2>
+
+Given matrices $A \in \mathbb{R}^{M \times N}$ and $B \in \mathbb{R}^{N \times K}$, the output matrix $C \in \mathbb{R}^{M \times K}$ is defined element-wise as:
+
+$$C_{i,j} = \sum_{n=1}^{N} A_{i,n} \cdot B_{n,j}, \quad i \in [1, M],\; j \in [1, K].$$
 
 The most basic matrix multiplication kernel looks like this:
 ```cuda
@@ -66,7 +78,11 @@ Arithmetic Intensity for this kernel:
 Unsurprisingly we are in the bottom quartile of performance given this naive implementation, time to do better!
 
 <h2>Optimization 1: Tiled Matmul with Shared Memory</h2>
-The starting point to reduce global memory traffic is a textbook tiled matrix multiplication. We divide the problem into tiles and sequentially load tiles into shared memory and compute partial accumulations until the full matrices have been processed. At every tile step, each thread loads one element into shared memory, we synchronize, then each thread computes one (partial) output element. Graphically this looks like:
+The starting point to reduce global memory traffic is a textbook tiled matrix multiplication. We divide the problem into tiles and sequentially load tiles into shared memory and compute partial accumulations until the full matrices have been processed. The inner sum can be split into consecutive chunks of size $T$:
+
+$$C_{ij} = \sum_{n=1}^{N} A_{in} \cdot B_{nj} = \sum_{t=0}^{\lceil N/T \rceil - 1} \sum_{k=0}^{T-1} A_{i,\, tT+k} \cdot B_{tT+k,\, j}.$$
+
+Each inner sum is a partial accumulation over a single tile. Because addition is associative, computing and summing these partial results produces the exact same output as the original definition. At every tile step, each thread loads one element into shared memory, we synchronize, then each thread computes one (partial) output element. Graphically this looks like:
 {:refdef: style="text-align: center;"}
 ![Matmul kernel 2]({{ "/images/post_7/kernel_2.png"}})
 {: refdef}
@@ -148,9 +164,11 @@ __global__ void matmul_coarsened_tiled_basic(
     int row_base = block_row + ty * TM;
     int col_base = block_col + tx * TN;
 
+    // Block tiles: loaded from global memory into shared memory
     __shared__ float tile_A[BM][BK]; // 64x8
     __shared__ float tile_B[BK][BN]; // 8x64
 
+    // Micro-tiles: per-thread accumulators stored in registers
     float acc[TM][TN];
     for (int i = 0; i < TM; i++) {
         for (int j = 0; j < TN; j++) {
@@ -159,68 +177,8 @@ __global__ void matmul_coarsened_tiled_basic(
     }
 
     int num_tiles = (N + BK - 1) / BK;
-
-    for (int t = 0; t < num_tiles; t++) {
-        int k0 = t * BK;
-
-        // ----------------------------
-        // Load A tile: BM x BK
-        // Use tx to cover BK columns (BK=8), so only tx<8 participates.
-        // Each participating thread loads TM rows.
-        // Total loads = (BM/TM) * BK * TM = BM*BK
-        // ----------------------------
-        if (tx < BK) {
-            for (int i = 0; i < TM; i++) {
-                int a_row = block_row + ty * TM + i;
-                int a_col = k0 + tx;
-                float v = 0.0f;
-                if (a_row < M && a_col < N) {
-                    v = A[a_row * N + a_col];
-                }
-                tile_A[ty * TM + i][tx] = v;
-            }
-        }
-
-        // ----------------------------
-        // Load B tile: BK x BN
-        // Use ty to cover BK rows (BK=8), so only ty<8 participates.
-        // Each participating thread loads TN columns.
-        // Total loads = BK * (BN/TN) * TN = BK*BN
-        // ----------------------------
-        if (ty < BK) {
-            for (int j = 0; j < TN; j++) {
-                int b_row = k0 + ty;
-                int b_col = block_col + tx * TN + j;
-                float v = 0.0f;
-                if (b_row < N && b_col < K_dim) {
-                    v = B[b_row * K_dim + b_col];
-                }
-                tile_B[ty][tx * TN + j] = v;
-            }
-        }
-
-        __syncthreads();
 ```
 
-```cuda
-float acc[TM][TN] = {0.0f};
-
-for (int k = 0; k < BK; k++) {
-    float a_frag[TM];
-    float b_frag[TN];
-
-    // Load fragments into registers
-    for (int i = 0; i < TM; i++)
-        a_frag[i] = tile_A[ty * TM + i][k];
-    for (int j = 0; j < TN; j++)
-        b_frag[j] = tile_B[k][tx * TN + j];
-
-    // Outer product - this is where register reuse happens
-    for (int i = 0; i < TM; i++)
-        for (int j = 0; j < TN; j++)
-            acc[i][j] += a_frag[i] * b_frag[j];
-}
-```
 I want to zoom in on the loading pattern, we now have 16x16=256 threads in a block needing to load 64x8 values for A and 8x64 for B = 1024. Previously every active thread was simply loading a single element of both tiles like so, as the tiles were the size of the block:
 ```cuda
 // Each thread loads one element
@@ -276,8 +234,27 @@ Alternatively, we can have only a subset of the threads participate (i.e. tx < B
         __syncthreads();
 ```
 
-After loading the tile like before, we now load fragments into the registers first.
+After loading the tile, each thread pulls its slice of the shared tile into register fragments and computes the outer product:
 
+```cuda
+float acc[TM][TN] = {0.0f};
+
+for (int k = 0; k < BK; k++) {
+    float a_frag[TM];
+    float b_frag[TN];
+
+    // Load fragments into registers
+    for (int i = 0; i < TM; i++)
+        a_frag[i] = tile_A[ty * TM + i][k];
+    for (int j = 0; j < TN; j++)
+        b_frag[j] = tile_B[k][tx * TN + j];
+
+    // Outer product - this is where register reuse happens
+    for (int i = 0; i < TM; i++)
+        for (int j = 0; j < TN; j++)
+            acc[i][j] += a_frag[i] * b_frag[j];
+}
+```
 
 The magic is in the outer product. We load 4 values from A and 4 values from B (8 loads total), then perform 16 FMAs. Each a_frag[i] is used 4 times, each b_frag[j] is used 4 times. Compare this to the naive version: 2 loads → 1 FMA. Now we have 8 loads → 16 FMAs.
 
