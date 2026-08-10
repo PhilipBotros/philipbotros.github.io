@@ -27,7 +27,7 @@ The two fundamental properties of a compute system are:
 
 The time of your algorithm is dominated by:
 
-$$\text{Time} = \max(\text{compute_time},\ \text{data_movement_time})$$
+$$\text{Time} \geq \max(\text{compute_time},\ \text{data_movement_time})$$
 
 In other words, performance is bounded by either computation or communication.
 
@@ -62,7 +62,7 @@ Before diving in, let's establish some targets. Performance is measured with M=8
 
 $$\frac{412 \times 10^9}{8.1 \times 10^{12}} \approx 50.9 \text{ ms.}$$
 
-The two input matrices total $(8192 \times 6144 + 6144 \times 4096) \times 4 \approx$ **302 MB** and writing the output adds another $8192 \times 4096 \times 4 \approx$ **134 MB**, giving an arithmetic intensity (FLOPs per byte transferred) of $\sim$**945 FLOPs/byte**. The T4's memory bandwidth is **320 GB/s**, so its [roofline](https://modal.com/gpu-glossary/perf/roofline-model) crossover is $8.1 \times 10^{12} / 320 \times 10^{9} \approx$ **25.3 FLOPs/byte**, so at these dimensions the problem is firmly **compute-bound**. The floor is set by FP32 throughput, not memory bandwidth.
+The two input matrices total $(8192 \times 6144 + 6144 \times 4096) \times 4 \approx$ **302 MB** and writing the output adds another $8192 \times 4096 \times 4 \approx$ **134 MB**, giving an arithmetic intensity (FLOPs per byte transferred) of $\sim$**945 FLOPs/byte**. The T4's memory bandwidth is **320 GB/s**, so its [roofline](https://modal.com/gpu-glossary/perf/roofline-model) crossover is $8.1 \times 10^{12} / 320 \times 10^{9} \approx$ **25.3 FLOPs/byte**, so at these dimensions the problem is firmly **compute-bound**, assuming we reuse data well enough to only move each matrix roughly once. The floor is set by FP32 throughput, not memory bandwidth, though as we'll see shortly individual kernels can still be very much memory-bound.
 
 In practice, cuBLAS typically achieves 85-95% of peak FP32, putting it around **54-60 ms** for this problem.
 
@@ -303,7 +303,7 @@ The third kernel uses a larger block tile ($64 \times 64$) and further optimizes
 Every thread now does $2N \times TM \times TN$ FLOPs. The cooperative loading is spread unevenly across the block, some threads load 8 elements per step, some 4 and some none, but averaged over the 256 threads the 1024 tile elements work out to 4 elements (16 bytes) per thread per step, or $16 \times \lceil N / BK \rceil$ bytes across the full reduction.
 
 {:refdef: style="text-align: center;"}
-![Memory Hierarchy]({{ "/images/post_7/mem_hierarchy.png"}})
+![Register Tiling Traffic Comparison]({{ "/images/post_7/register_tiling.png"}})
 {: refdef}
 
 **Global Memory Intensity (The Roofline AI)**
@@ -323,17 +323,15 @@ Note that this quadrupled the global arithmetic intensity compared to the previo
 **Runtime: 194.28 ms percentile 92.5**
 
 <h2>Optimization 3: Coalesced Global Memory Loading</h2>
-Now we have a decent arithmetic intensity and keep data local it's time to look at the memory traffic. My initial implementation had each thread load its own strip of data:
+Now we have a decent arithmetic intensity and keep data local it's time to look at the memory traffic. Remember the B load from the previous kernel:
 
 ```cuda
-// Bad: each thread loads its own vertical strip of rows
-for (int i = 0; i < TM; i++) {
-    tile_A[ty * TM + i][k] = A[(row_base + i) * N + k_offset + k];
-}
+// Bad: at any fixed j, neighboring lanes are TN floats apart
+tile_B[ty][tx * TN + j] = B[(k0 + ty) * K_dim + block_col + tx * TN + j];
 ```
-The problem is what happens at any given moment. Thread 0 is loading address 0, thread 1 is loading address 64, thread 2 is loading address 128 (illustrative numbers, the point is that they are far apart). The memory controller sees scattered addresses and issues separate transactions for each. The key thing to remember is that global memory coalescing is decided at the warp level, not per thread. In CUDA, a load instruction is executed by 32 threads in lockstep, and the hardware coalesces the 32 addresses requested by the warp into as few memory transactions as possible.
+The problem is what happens at any given moment. At a fixed j, thread 0 is loading column 0, thread 1 is loading column 4, thread 2 is loading column 8. Global memory is fetched in 32 byte sectors, so with neighboring lanes 4 floats apart we only use a quarter of every sector we touch. The key thing to remember is that global memory coalescing is decided at the warp level, not per thread. In CUDA, a load instruction is executed by 32 threads in lockstep, and the hardware coalesces the 32 addresses requested by the warp into as few memory transactions as possible.
 
-That means a pattern can look “nice” within each thread (each thread walks consecutive elements), yet still be slow if neighboring lanes access far-apart addresses at the same instruction.
+That means a pattern can look “nice” within each thread (each thread walks consecutive elements), yet still be wasteful if neighboring lanes leave gaps between their addresses at the same instruction.
 The fix is to make threads cooperate on the load: assign a linear thread id and have the block stride collectively through the tile. Then, for each load instruction, consecutive lanes tend to fetch consecutive addresses, which yields coalesced transactions:
 
 ```cuda
@@ -348,6 +346,7 @@ for (int i = tid; i < BM * BK; i += num_threads) {
     tile_A[a_row][a_col] = A[global_row * N + global_col];
 }
 ```
+The same scheme loads the B tile.
 
 ```
 // BM=64, BK=8, 256 threads, tile has 512 elements → 2 iterations per thread
@@ -406,7 +405,7 @@ for (int t = 0; t < num_tiles; t++) {
     __syncthreads();
 }
 ```
-This gave a modest speedup by hiding some memory latency behind computation. This did not hold when the tile size was increased! Also note that the T4 does not support async copies (`cp.async`), so the load and compute phases cannot truly overlap at the hardware level. Both compete for the same execution resources. On newer architectures (Ampere and beyond), `cp.async` offloads global-to-shared memory copies to dedicated hardware, freeing the warp to execute compute instructions while the copy completes in the background.
+This gave a modest speedup by hiding some memory latency behind computation. This did not hold when the tile size was increased! Also note that the T4 does not support async copies (`cp.async`), the loads go through registers and compete for the same issue slots, although the warp scheduler can still overlap them with compute from other warps as usual. On newer architectures (Ampere and beyond), `cp.async` offloads global-to-shared memory copies to dedicated hardware, freeing the warp to execute compute instructions while the copy completes in the background.
 
 **Runtime: 190.58 ms percentile 92.7**
 
@@ -450,7 +449,7 @@ More work per thread means better register reuse and fewer synchronization point
 
 After increasing tile sizes, double buffering no longer improved performance and actually hurt it. One likely suspect is resource pressure: double buffering doubles shared memory usage, which can reduce the number of resident blocks per SM and therefore lower occupancy. With 144 accumulators per thread however, register pressure alone may already limit the SM to a single resident block, so take this as an educated guess.
 
-Also, as noted earlier, the T4 does not support `cp.async`, meaning loads and compute cannot truly overlap through dedicated hardware. Without that capability, the extra shared memory cost of double buffering provided no benefit.
+Also, as noted earlier, the T4 does not support `cp.async`, meaning loads and compute cannot truly overlap through dedicated hardware. Without that capability, the overlap we do get no longer outweighed the extra shared memory cost at these tile sizes.
 
 **Runtime: 123.21 ms percentile 97.0**
 
