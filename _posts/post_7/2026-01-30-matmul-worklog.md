@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "How to get to the top percentile of a mat mul kernel (worklog)"
+title: "How to get a matmul kernel into the top percentile (worklog)"
 date: 2026-01-30
 cover: /images/post_7/perc_99.png
 background: /images/post_7/perc_99.png
@@ -40,12 +40,12 @@ Stephen Jones from Nvidia gives a good explanation in [this lecture](https://www
 
 This has been a known problem in computing for a while and memory hierarchy systems have been devised to partly overcome this issue. CPUs rely on hardware-managed caches (L1/L2/L3), while GPUs combine caches with programmer-managed shared memory to keep data close to the compute units. TPUs take this to the extreme and drop caches almost entirely in favor of a large compiler-managed scratchpad, with the compiler (XLA) scheduling all data movement so operands stream deterministically into the compute units. Given the predictable nature of data movement for the dominant ML operations, this makes a lot of sense (and saves a lot of die area).
 
-As we'll mostly be focusing on optimising the use of the memory hierarchy, let's have a look at the hierarchy of an Nvidia GPU:
+As we'll mostly be focusing on optimising the use of the memory hierarchy, let's have a look at the hierarchy of an Nvidia GPU. The numbers shown are representative of a modern data-center GPU, exact capacities vary per architecture (the T4 we'll be using has 16 GB of GDDR6 and 64 KB of shared memory per SM for example).
 {:refdef: style="text-align: center;"}
-![Memory Hierarchy]({{ "/images/post_7/mem_hierarchy_full.png"}})
+![Memory Hierarchy]({{ "/images/post_7/cache_hierarchy.png"}})
 {: refdef}
 
-As you can see there is quite an elaborate memory hierarchy divided into programmer and hardware managed levels. On one side you have the caches, where the hardware stores recently used data. On the other side you're provided with registers and shared memory which are under our control to minimize round trips to very expensive HBM. There's an inverse relationship between size and speed and the difference between HBM to shared memory to registers is 20-30x per step!
+As you can see there is quite an elaborate memory hierarchy divided into programmer and hardware managed levels. On one side you have the caches, where the hardware stores recently used data. On the other side you're provided with shared memory which is under our control, and registers which the compiler allocates for us, to minimize round trips to very expensive global memory. There's an inverse relationship between size and speed and the difference between global memory to shared memory to registers is 20-30x per step!
 
 Given this hierarchy, the challenge becomes restructuring algorithms so data remains in fast memory as long as possible. This typically means breaking problems into tiles that fit into shared memory and registers. Matrix multiplication is a classic example, and modern algorithms like FlashAttention apply the same principle by restructuring attention into SRAM-sized tiles.
 
@@ -62,7 +62,7 @@ Before diving in, let's establish some targets. Performance is measured with M=8
 
 $$\frac{412 \times 10^9}{8.1 \times 10^{12}} \approx 50.9 \text{ ms.}$$
 
-The two input matrices total $(8192 \times 6144 + 6144 \times 4096) \times 4 \approx$ **302 MB**, giving an arithmetic intensity (FLOPs per byte transferred) of $\sim$**1365 FLOPs/byte**. The T4's memory bandwidth is **320 GB/s**, so its [roofline](https://modal.com/gpu-glossary/perf/roofline-model) crossover is $8.1 \times 10^{12} / 320 \times 10^{9} \approx$ **25.3 FLOPs/byte**, so at these dimensions the problem is firmly **compute-bound**. The floor is set by FP32 throughput, not memory bandwidth.
+The two input matrices total $(8192 \times 6144 + 6144 \times 4096) \times 4 \approx$ **302 MB** and writing the output adds another $8192 \times 4096 \times 4 \approx$ **134 MB**, giving an arithmetic intensity (FLOPs per byte transferred) of $\sim$**945 FLOPs/byte**. The T4's memory bandwidth is **320 GB/s**, so its [roofline](https://modal.com/gpu-glossary/perf/roofline-model) crossover is $8.1 \times 10^{12} / 320 \times 10^{9} \approx$ **25.3 FLOPs/byte**, so at these dimensions the problem is firmly **compute-bound**. The floor is set by FP32 throughput, not memory bandwidth.
 
 In practice, cuBLAS typically achieves 85-95% of peak FP32, putting it around **54-60 ms** for this problem.
 
@@ -90,20 +90,20 @@ __global__ void matrix_multiplication_kernel(const float* A, const float* B, flo
 }
 ```
 
-Each thread computes one output element of the matrix C by loading an entire row from A and an entire column from B from global memory. If we assume they're both square with a size of N, this means every active thread loads 4N bytes from A and 4N bytes from B given FP32 inputs (ignoring the write back to HBM). Every thread does N multiplications and N additions. 
+Each thread computes one output element of the matrix C by loading an entire row from A and an entire column from B from global memory. If we assume they're both square with a size of N, this means every active thread loads 4N bytes from A and 4N bytes from B given FP32 inputs (ignoring the write back to global memory). Every thread does N multiplications and N additions. 
 
 {:refdef: style="text-align: center;"}
 ![Matmul kernel 1]({{ "/images/post_7/kernel_1.png"}})
 {: refdef}
 
-A good way of measuring algorithmic performance is arithmetic intensity. This translates to the number of FLOPs performed for every byte loaded from global memory. The higher this number the more we are bottlenecked by compute speed versus HBM bandwidth. The formula for this is:
+A good way of measuring algorithmic performance is arithmetic intensity. This translates to the number of FLOPs performed for every byte loaded from global memory. The higher this number the more we are bottlenecked by compute speed versus global memory bandwidth. The formula for this is:
 
 $$ AI = \frac{\text{FLOPs}}{\text{Bytes Transferred}} $$
 
 Arithmetic Intensity for this kernel:
 
 
-**2N FLOPs / 8N bytes = 0.25 FLOPs/byte.** This is extremely low, for every FLOP we need to load 4 bytes! The T4 GPU has a peak bandwidth of ~320 GB/s and peak compute of ~8.1 TFLOPS. At 0.25 FLOPs/byte, bandwidth limits us to $0.25 \times 320 = 80$ GFLOPS, which is less than 1% of peak compute. We'll aim to close this gap over the course of this post.
+**2N FLOPs / 8N bytes = 0.25 FLOPs/byte.** This is extremely low, for every FLOP we need to load 4 bytes! The T4 GPU has a peak bandwidth of ~320 GB/s and peak compute of ~8.1 TFLOPS. At 0.25 FLOPs/byte, bandwidth limits us to $0.25 \times 320 = 80$ GFLOPS, which is less than 1% of peak compute. In practice the caches absorb part of this traffic, threads in the same half-warp read the same row of A for example, which is why the measured runtime below works out to roughly 430 GFLOPS instead. The conclusion still stands though, we are heavily memory-bound and far away from peak compute. We'll aim to close this gap over the course of this post.
 
 **Runtime: 956.41 ms percentile 16.9**
 
@@ -114,7 +114,7 @@ The starting point to reduce global memory traffic is a textbook tiled matrix mu
 
 $$C_{ij} = \sum_{n=1}^{N} A_{in} \cdot B_{nj} = \sum_{t=0}^{\lceil N/T \rceil - 1} \sum_{k=0}^{T-1} A_{i,\, tT+k} \cdot B_{tT+k,\, j}.$$
 
-Each inner sum is a partial accumulation over a single tile. Because addition is associative, we can split the reduction dimension into smaller chunks and accumulate partial dot products without changing the final result. At every tile step, each thread loads one element into shared memory, we synchronize, then each thread computes one (partial) output element. Graphically this looks like:
+Each inner sum is a partial accumulation over a single tile. Because addition is associative over the reals, we can split the reduction dimension into smaller chunks and accumulate partial dot products without changing the final result (FP32 reassociation can change rounding, but this loop sums in the same ascending order as the naive kernel so the result is identical). At every tile step, each thread loads one element into shared memory, we synchronize, then each thread computes one (partial) output element. Graphically this looks like:
 {:refdef: style="text-align: center;"}
 ![Matmul kernel 2]({{ "/images/post_7/kernel_2.png"}})
 {: refdef}
@@ -159,7 +159,7 @@ For a tile size of $T = 16$, this gives an arithmetic intensity of $\mathbf{4.0}
 
 An interesting observation is that pushing the tile size to the maximum supported by a single block (1024 threads, i.e. $T = 32$) doubles the arithmetic intensity to 8.0 FLOPs/byte, yet performance on a T4 actually decreases. This highlights an important caveat of roofline-style reasoning: increasing arithmetic intensity does not automatically translate to higher throughput.
 
-In this regime, the kernel is no longer limited by global memory bandwidth. Instead, hardware characteristics begin to dominate: large blocks reduce scheduling flexibility, often limiting the SM to a single resident block, which in turn reduces the total number of active warps available to hide latency. Additionally, larger tiles typically increase register pressure and synchronization cost, further constraining occupancy. The net effect is that, despite improved data reuse, the GPU is less able to keep its execution pipelines busy.
+Even at 8.0 FLOPs/byte we are still below the T4's crossover, and neither version gets anywhere near its bandwidth ceiling, so the limit lies elsewhere. It's not occupancy either, both configurations can keep the same 32 warps resident on a Turing SM. One thing that does change is block independence. A 32×32 tile fills the SM with a single 1024-thread block, so at every `__syncthreads()` the warps that arrive early can only sit and wait, there is no other block whose warps could run in the meantime. With 16×16 tiles, several independent blocks live on the same SM and the scheduler can run warps from another block while one waits at a barrier. My best guess is that this loss of scheduling flexibility explains the slowdown.
 
 **Runtime: 593.53 ms percentile 76.1**
 
@@ -223,7 +223,7 @@ __syncthreads();
 Since every thread now has multiple elements to load we have a choice to make inside our kernel on how to design this.
 We could theoretically have every thread load 2 values from A and 2 values from B but the indexing will become quite cumbersome.
 
-Alternatively, we can have only a subset of the threads participate (i.e. tx < BK), which keeps the mapping simple: tx directly indexes the BK columns and each participating thread loads a short vertical strip of TM elements. This preserves coalesced global loads and reduces the amount of index arithmetic and branching in the load path.
+Alternatively, we can have only a subset of the threads participate (i.e. tx < BK), which keeps the mapping simple: tx directly indexes the BK columns and each participating thread loads a short vertical strip of TM elements. This keeps the A loads coalesced (lanes tx 0-7 read consecutive addresses) and reduces the amount of index arithmetic and branching in the load path. The B loads are not ideal here, neighboring lanes end up 4 floats apart, but we'll fix the loading pattern properly in the next optimization.
 
 {:refdef: style="text-align: center;"}
 ![Cooperative Loading]({{ "/images/post_7/coop_loading.png"}})
@@ -300,7 +300,7 @@ Outside of adding micro-tiling we needed to decouple the block reduction dimensi
 <!-- 
 The third kernel uses a larger block tile ($64 \times 64$) and further optimizes by having each thread compute multiple results ($4 \times 4 = 16$ outputs) using registers. This increases data reuse at two levels: the block level (Global $\rightarrow$ Shared) and the thread level (Shared $\rightarrow$ Registers). -->
 
-Every thread now does $2N \times TM \times TN$ FLOPs while loading $16 \times \lceil N / BK \rceil$ bytes, as the 1024 tile elements per step are now spread over the 256 threads (4 elements, 16 bytes per thread per step). 
+Every thread now does $2N \times TM \times TN$ FLOPs. The cooperative loading is spread unevenly across the block, some threads load 8 elements per step, some 4 and some none, but averaged over the 256 threads the 1024 tile elements work out to 4 elements (16 bytes) per thread per step, or $16 \times \lceil N / BK \rceil$ bytes across the full reduction.
 
 {:refdef: style="text-align: center;"}
 ![Memory Hierarchy]({{ "/images/post_7/mem_hierarchy.png"}})
@@ -331,7 +331,7 @@ for (int i = 0; i < TM; i++) {
     tile_A[ty * TM + i][k] = A[(row_base + i) * N + k_offset + k];
 }
 ```
-The problem is what happens at any given moment. Thread 0 is loading address 0, thread 1 is loading address 64, thread 2 is loading address 128. The memory controller sees scattered addresses and issues separate transactions for each. The key thing to remember is that global memory coalescing is decided at the warp level, not per thread. In CUDA, a load instruction is executed by 32 threads in lockstep, and the hardware coalesces the 32 addresses requested by the warp into as few memory transactions as possible.
+The problem is what happens at any given moment. Thread 0 is loading address 0, thread 1 is loading address 64, thread 2 is loading address 128 (illustrative numbers, the point is that they are far apart). The memory controller sees scattered addresses and issues separate transactions for each. The key thing to remember is that global memory coalescing is decided at the warp level, not per thread. In CUDA, a load instruction is executed by 32 threads in lockstep, and the hardware coalesces the 32 addresses requested by the warp into as few memory transactions as possible.
 
 That means a pattern can look “nice” within each thread (each thread walks consecutive elements), yet still be slow if neighboring lanes access far-apart addresses at the same instruction.
 The fix is to make threads cooperate on the load: assign a linear thread id and have the block stride collectively through the tile. Then, for each load instruction, consecutive lanes tend to fetch consecutive addresses, which yields coalesced transactions:
@@ -366,7 +366,11 @@ Thread 0   loads tile_A[32][0] → A[row+32, k+0]
 Thread 255 loads tile_A[63][7] → A[row+63, k+7]
 ```
 
-Now at any given moment, thread 0 loads address 0, thread 1 loads address 1, thread 2 loads address 2. The memory controller coalesces these into a single wide transaction.
+Now at any given moment, thread 0 loads address 0, thread 1 loads address 1, thread 2 loads address 2. The memory controller can service the warp with a few fully utilized transactions instead of wasting most of every fetch, coalescing is about not paying for bytes you don't use.
+
+{:refdef: style="text-align: center;"}
+![Global Memory Coalescing]({{ "/images/post_7/coalescing.png"}})
+{: refdef}
 
 As you can see the speedup is very modest here. The effect became larger once the tile sizes grew in the later kernels, where coalesced loading was worth about 0.7 percentile points (96.3 vs 97.0).
 
@@ -374,17 +378,12 @@ As you can see the speedup is very modest here. The effect became larger once th
 
 <h2>Optimization 4: Double Buffering</h2>
 
-The next optimization overlaps memory loading with computation. Without double buffering:
+The next optimization tries to overlap memory loading with computation, a form of software pipelining. With double buffering, we use two sets of shared memory and load the next tile while computing on the current one. The loads themselves are ordinary synchronous loads as the T4 has no hardware support for asynchronous copies, so we rely on the compiler and warp scheduler to actually overlap the independent work (more on this below).
 
-```
-Load tile 0 → [stall] → Compute tile 0 → Load tile 1 → [stall] → Compute tile 1
-```
+{:refdef: style="text-align: center;"}
+![Double Buffering]({{ "/images/post_7/double_buffering.png"}})
+{: refdef}
 
-With double buffering, we use two sets of shared memory and load the next tile while computing on the current one:
-
-```
-Load tile 0 → [stall] → Load tile 1 + Compute tile 0 → Load tile 2 + Compute tile 1 → ...
-```
 In code this looks roughly like:
 
 ```cuda
@@ -449,7 +448,7 @@ More work per thread means better register reuse and fewer synchronization point
 
 <h2>Optimization 6: Removing double buffering with larger tiles</h2>
 
-After increasing tile sizes, double buffering no longer improved performance and actually hurt it. The most likely reason is resource pressure: double buffering doubles shared memory usage, which can reduce the number of resident blocks per SM and therefore lower occupancy. With larger tiles already increasing register usage, this likely pushed the kernel into a regime where fewer warps were available to hide latency.
+After increasing tile sizes, double buffering no longer improved performance and actually hurt it. One likely suspect is resource pressure: double buffering doubles shared memory usage, which can reduce the number of resident blocks per SM and therefore lower occupancy. With 144 accumulators per thread however, register pressure alone may already limit the SM to a single resident block, so take this as an educated guess.
 
 Also, as noted earlier, the T4 does not support `cp.async`, meaning loads and compute cannot truly overlap through dedicated hardware. Without that capability, the extra shared memory cost of double buffering provided no benefit.
 
@@ -491,6 +490,10 @@ int col = threadIdx.x + BN * blockIdx.x;
 ```
 Now when writing row 0, thread 0 writes column 0, thread 1 writes column 1, thread 2 writes column 2. Adjacent threads write adjacent addresses.
 
+{:refdef: style="text-align: center;"}
+![Strided Thread Layout]({{ "/images/post_7/strided_layout.png"}})
+{: refdef}
+
 **Runtime: 111.75 ms percentile 98.7**
 
 <h2>Optimization 8: Compiler optimizations</h2>
@@ -524,14 +527,14 @@ for (int k = 0; k < BK; k++) {
 
 Not everything I tried improved performance:
 
-- **float4 vectorized loads**: Alignment issues with BK=8 caused crashes. This would likely require BK=16 or explicit padding to guarantee proper alignment. Since the final configuration ended up at BK=16 anyway, this is worth revisiting.
-- **Double buffering with large tiles** (see Optimization 6): The added shared memory pressure reduced occupancy, and without `cp.async` on T4 the extra complexity didn’t translate into meaningful overlap.
+- **float4 vectorized loads**: My attempt crashed on what I suspect was an alignment or indexing issue I didn't chase down. Since the final configuration ended up at BK=16 anyway, this is worth revisiting.
+- **Double buffering with large tiles** (see Optimization 6): The added shared memory pressure may have reduced occupancy, and without `cp.async` on T4 the extra complexity didn’t translate into meaningful overlap.
 - **Bank conflict padding**: Consistently increased runtime by ~10%, suggesting bank conflicts were not the dominant bottleneck and the padding likely hurt locality or indexing efficiency instead.
 
 <h2>Summary</h2>
 
 {:refdef: style="text-align: center;"}
-![Memory Hierarchy]({{ "/images/post_7/opt_journey.png"}})
+![Runtime and percentile improvements across optimization steps]({{ "/images/post_7/opt_journey.png"}})
 {: refdef}
 
 Coming back to the target we set at the start, the final kernel runs in 108.89 ms, which works out to roughly 47% of the T4's peak FP32 throughput. cuBLAS, at 85-95% of peak, would finish the same problem in 54-60 ms. So while we made it into the top percentile of submissions, there is still a 2x gap to a fully tuned library, which would require techniques like vectorized loads and warp-level tiling to close.
@@ -559,7 +562,7 @@ As the T4 is ancient, let's try this exact kernel on the H100 and B200. As an il
 
 Running the exact same kernel gives us the **88.7th** percentile on the H100 and **81.5th** on the B200, with runtimes of **14.45 ms** and **12.48 ms** respectively, roughly an **8x** speedup over the T4. This is one of the nice things about CUDA: the programming model abstracts how work is scheduled and executed, so the same kernel automatically benefits from more SMs, wider memory paths, and better schedulers. Of course, the kernel is nowhere near optimal on these GPUs, but it highlights how well CUDA’s abstraction layer holds up across generations.
 
-The percentile drop also makes sense. Tile parameters tuned for the T4 are not ideal here. BN trades off two things that scale very differently across these GPUs: arithmetic intensity (how much math per byte loaded) and occupancy (how many warps can stay resident, dominated by register pressure). The T4 and H100/B200 sit in very different regimes, so the optimal tile sizes shift. Decreasing BK to 8 on the newer GPUs already recovers some performance, bringing the H100 to **91.9** and the B200 to **86.3**.
+The percentile drop also makes sense. Tile parameters tuned for the T4 are not ideal here. The block tiles (BM, BN) and the per-thread tiles (TM, TN) together trade off arithmetic intensity (how much math per byte loaded), register pressure and occupancy (how many warps can stay resident). The T4 and H100/B200 sit in very different regimes, so the optimal balance shifts. Decreasing BK to 8 on the newer GPUs already recovers some performance, bringing the H100 to **91.9** and the B200 to **86.3**. Note that BK cancels out of the block-level arithmetic intensity entirely (both the FLOPs and the bytes per step scale with it), so the gain can't come from better data reuse on paper. It points to an execution or resource effect instead, the smaller fully unrolled inner loop for example. Yet another reminder that the roofline model is not the whole story.
 
 To fully utilise these architectures you would want to use their native features such as TMA for hardware-accelerated tile loads, newer tensor core instructions, and larger shared memory capacities. I'd recommend reading [Modular's Blackwell matmul series](https://www.modular.com/blog/matrix-multiplication-on-nvidias-blackwell-part-1-introduction) and [this worklog on outperforming cuBLAS on the H100](https://cudaforfun.substack.com/p/outperforming-cublas-on-h100-a-worklog) for this.
 
