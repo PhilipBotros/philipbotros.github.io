@@ -1,4 +1,6 @@
 name: Machine Learning Blog
+description: Machine learning blog by Philip Botros, writing about model optimisation, efficient inference and making models run fast, from edge devices to GPUs.
+og_image: /images/profile/pb.jpg
 markdown: kramdown
 kramdown:
   input: GFM

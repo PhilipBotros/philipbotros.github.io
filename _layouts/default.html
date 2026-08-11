@@ -2,13 +2,17 @@
 	<html>
 		<head>
 			<meta name="viewport" content="width=device-width, initial-scale=1.0">
-			<title>{{ page.title }}</title>
-			<meta property="og:title" content="{{ page.title }}">
+			<title>{{ page.title | default: site.name }}</title>
+			{% assign og_description = page.excerpt | default: site.description %}
+			{% assign og_image = page.og_image | default: page.cover | default: site.og_image %}
+			<meta name="description" content="{{ og_description | strip_html | strip | escape }}">
+			<meta property="og:site_name" content="{{ site.name }}">
+			<meta property="og:title" content="{{ page.title | default: site.name }}">
 			<meta property="og:type" content="{% if page.date %}article{% else %}website{% endif %}">
 			<meta property="og:url" content="{{ page.url | absolute_url }}">
-			{% if page.excerpt %}<meta property="og:description" content="{{ page.excerpt | strip_html | strip | escape }}">{% endif %}
-			{% if page.og_image %}<meta property="og:image" content="{{ page.og_image | absolute_url }}">{% elsif page.cover %}<meta property="og:image" content="{{ page.cover | absolute_url }}">{% endif %}
-			<meta name="twitter:card" content="summary_large_image">
+			<meta property="og:description" content="{{ og_description | strip_html | strip | escape }}">
+			<meta property="og:image" content="{{ og_image | absolute_url }}">
+			<meta name="twitter:card" content="{% if page.og_image or page.cover %}summary_large_image{% else %}summary{% endif %}">
 			<!-- link to main stylesheet -->
 			<link rel="stylesheet" type="text/css" href="/css/main.css">
 			<link rel="stylesheet" href="/css/syntax.css">
