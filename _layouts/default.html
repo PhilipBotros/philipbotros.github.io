@@ -3,6 +3,12 @@
 		<head>
 			<meta name="viewport" content="width=device-width, initial-scale=1.0">
 			<title>{{ page.title }}</title>
+			<meta property="og:title" content="{{ page.title }}">
+			<meta property="og:type" content="{% if page.date %}article{% else %}website{% endif %}">
+			<meta property="og:url" content="{{ page.url | absolute_url }}">
+			{% if page.excerpt %}<meta property="og:description" content="{{ page.excerpt | strip_html | strip | escape }}">{% endif %}
+			{% if page.og_image %}<meta property="og:image" content="{{ page.og_image | absolute_url }}">{% elsif page.cover %}<meta property="og:image" content="{{ page.cover | absolute_url }}">{% endif %}
+			<meta name="twitter:card" content="summary_large_image">
 			<!-- link to main stylesheet -->
 			<link rel="stylesheet" type="text/css" href="/css/main.css">
 			<link rel="stylesheet" href="/css/syntax.css">

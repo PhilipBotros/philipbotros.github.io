@@ -4,6 +4,7 @@ title: "How to get a matmul kernel into the top percentile (worklog)"
 date: 2026-08-11
 cover: /images/post_7/perc_99.png
 background: /images/post_7/perc_99.png
+og_image: /images/post_7/opt_journey.png
 mathjax: true
 excerpt: <br> A worklog on taking a CUDA matmul kernel from naive to the top 1% on a T4, building intuition for GPU performance along the way.
 ---
