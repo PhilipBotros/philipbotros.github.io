@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "How to get a matmul kernel into the top 1% (worklog)"
+title: "How to get a matmul kernel into the top percentile (worklog)"
 date: 2026-08-11
 cover: /images/post_7/perc_99.png
 background: /images/post_7/perc_99.png
