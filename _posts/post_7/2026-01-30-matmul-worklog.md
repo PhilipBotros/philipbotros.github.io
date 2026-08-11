@@ -11,7 +11,7 @@ This post documents my journey optimizing a CUDA matrix multiplication kernel, s
 
 More than anything, this is a worklog. The goal is not to present a definitive GEMM optimization guide, but to document how I learned to reason about GPU performance by iteratively improving a kernel and understanding the bottlenecks encountered along the way. The focus is less on absolute performance and more on building intuition for how memory hierarchy, data reuse, and execution resources interact to determine performance.
 
-There are already excellent deep dives into CUDA GEMM implementations such as [1](https://siboehm.com/articles/22/CUDA-MMM) and [2](https://www.aleksagordic.com/blog/matmul). Rather than focusing on the CUDA programming model itself, this post focuses on the performance bottlenecks that shaped each optimization step.
+There are already excellent deep dives into CUDA GEMM implementations such as [How to Optimize a CUDA Matmul Kernel for cuBLAS-like Performance](https://siboehm.com/articles/22/CUDA-MMM) by Simon Boehm and [Matrix Multiplication on GPU](https://www.aleksagordic.com/blog/matmul) by Aleksa Gordic. Rather than focusing on the CUDA programming model itself, this post focuses on the performance bottlenecks that shaped each optimization step.
 
 {:refdef: style="text-align: center;"}
 ![Matmul Optimization Journey]({{ "/images/post_7/perc_99.png"}}){: width="50%" style="border-radius: 12px;" }
@@ -368,7 +368,7 @@ Thread 255 loads tile_A[63][7] → A[row+63, k+7]
 Now at any given moment, thread 0 loads address 0, thread 1 loads address 1, thread 2 loads address 2. The memory controller can service the warp with a few fully utilized transactions instead of wasting most of every fetch, coalescing is about not paying for bytes you don't use.
 
 {:refdef: style="text-align: center;"}
-![Global Memory Coalescing]({{ "/images/post_7/coalescing.png"}})
+![Global Memory Coalescing]({{ "/images/post_7/coalescing.png"}}){: width="75%" }
 {: refdef}
 
 As you can see the speedup is very modest here. The effect became larger once the tile sizes grew in the later kernels, where coalesced loading was worth about 0.7 percentile points (96.3 vs 97.0).
@@ -380,7 +380,7 @@ As you can see the speedup is very modest here. The effect became larger once th
 The next optimization tries to overlap memory loading with computation, a form of software pipelining. With double buffering, we use two sets of shared memory and load the next tile while computing on the current one. The loads themselves are ordinary synchronous loads as the T4 has no hardware support for asynchronous copies, so we rely on the compiler and warp scheduler to actually overlap the independent work (more on this below).
 
 {:refdef: style="text-align: center;"}
-![Double Buffering]({{ "/images/post_7/double_buffering.png"}})
+![Double Buffering]({{ "/images/post_7/double_buffering.png"}}){: width="75%" }
 {: refdef}
 
 In code this looks roughly like:
@@ -490,7 +490,7 @@ int col = threadIdx.x + BN * blockIdx.x;
 Now when writing row 0, thread 0 writes column 0, thread 1 writes column 1, thread 2 writes column 2. Adjacent threads write adjacent addresses.
 
 {:refdef: style="text-align: center;"}
-![Strided Thread Layout]({{ "/images/post_7/strided_layout.png"}})
+![Strided Thread Layout]({{ "/images/post_7/strided_layout.png"}}){: width="75%" }
 {: refdef}
 
 **Runtime: 111.75 ms percentile 98.7**
