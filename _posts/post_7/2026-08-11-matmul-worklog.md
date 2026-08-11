@@ -1,13 +1,13 @@
 ---
 layout: post
 title: "How to get a matmul kernel into the top percentile (worklog)"
-date: 2026-01-30
+date: 2026-08-11
 cover: /images/post_7/perc_99.png
 background: /images/post_7/perc_99.png
 mathjax: true
 excerpt: <br> A worklog on taking a CUDA matmul kernel from naive to the top 1% on a T4, building intuition for GPU performance along the way.
 ---
-This post documents my journey optimizing a CUDA matrix multiplication kernel, starting from a naive implementation and ending up in the top 1% of performance on a T4 GPU on [LeetGPU](https://leetgpu.com/challenges/matrix-multiplication), a platform for learning GPU performance engineering through practical kernel challenges.
+Around Christmas last year I was looking for a fun side project and ended up looking more into CUDA. I've found [LeetGPU](https://leetgpu.com) to be extremely helpful in having a sandbox to test kernels for different problems on different hardware without having to spin up your own VM. I ended up with a [challenge](https://leetgpu.com/challenges/matrix-multiplication) to get to the top percentile of a mat mul and this is what I learned.
 
 More than anything, this is a worklog. The goal is not to present a definitive GEMM optimization guide, but to document how I learned to reason about GPU performance by iteratively improving a kernel and understanding the bottlenecks encountered along the way. The focus is less on absolute performance and more on building intuition for how memory hierarchy, data reuse, and execution resources interact to determine performance.
 
@@ -16,6 +16,8 @@ There are already excellent deep dives into CUDA GEMM implementations such as [H
 {:refdef: style="text-align: center;"}
 ![Matmul Optimization Journey]({{ "/images/post_7/perc_99.png"}}){: width="50%" style="border-radius: 12px;" }
 {: refdef}
+
+*Note: As you can see the kernels were written around Christmas last year, I'm sure Claude/Codex will one shot a better one now.*
 
 <h2> GPU bottlenecks </h2>
 
@@ -93,7 +95,7 @@ __global__ void matrix_multiplication_kernel(const float* A, const float* B, flo
 Each thread computes one output element of the matrix C by loading an entire row from A and an entire column from B from global memory. If we assume they're both square with a size of N, this means every active thread loads 4N bytes from A and 4N bytes from B given FP32 inputs (ignoring the write back to global memory). Every thread does N multiplications and N additions. 
 
 {:refdef: style="text-align: center;"}
-![Matmul kernel 1]({{ "/images/post_7/kernel_1.png"}})
+![Naive matmul kernel]({{ "/images/post_7/naive_kernel.png"}})
 {: refdef}
 
 A good way of measuring algorithmic performance is arithmetic intensity. This translates to the number of FLOPs performed for every byte loaded from global memory. The higher this number the more we are bottlenecked by compute speed versus global memory bandwidth. The formula for this is:
@@ -116,7 +118,7 @@ $$C_{ij} = \sum_{n=1}^{N} A_{in} \cdot B_{nj} = \sum_{t=0}^{\lceil N/T \rceil - 
 
 Each inner sum is a partial accumulation over a single tile. Because addition is associative over the reals, we can split the reduction dimension into smaller chunks and accumulate partial dot products without changing the final result (FP32 reassociation can change rounding, but this loop sums in the same ascending order as the naive kernel so the result is identical). At every tile step, each thread loads one element into shared memory, we synchronize, then each thread computes one (partial) output element. Graphically this looks like:
 {:refdef: style="text-align: center;"}
-![Matmul kernel 2]({{ "/images/post_7/kernel_2.png"}})
+![Tiled matmul kernel]({{ "/images/post_7/tiled_matmul_kernel.png"}})
 {: refdef}
 
 The code changes are relatively simple: we need to initialize shared memory, and at every step cooperatively load a tile and do the partial multiplication.
@@ -178,7 +180,7 @@ The key for the next optimization is that each thread can compute multiple outpu
 We are now covering a block of 64x64 where every thread computes a micro-tile of 4x4. We're still using threadblocks of 16x16 like in the previous kernel but the effective size has quadrupled. Furthermore, we decouple the reduction dimension (BK) from the block dimensions. Once we expand the output tile to 64×64, keeping the reduction tile square would drastically increase shared memory usage and register pressure. Using a smaller BK is necessary to make this larger tile shape work without collapsing occupancy. 
 
 {:refdef: style="text-align: center;"}
-![Matmul kernel 3]({{ "/images/post_7/kernel_3.png"}})
+![Register tiling kernel]({{ "/images/post_7/register_tiling_kernel.png"}})
 {: refdef}
 
 We now have to set up thread specific accumulator tiles (in registers) and we can do a form of **cooperative loading**. Indexing becomes slightly more involved as we now have another dimension to account for (micro-tile).  
@@ -561,13 +563,13 @@ As the T4 is ancient, let's try this exact kernel on the H100 and B200. As an il
 
 Running the exact same kernel gives us the **88.7th** percentile on the H100 and **81.5th** on the B200, with runtimes of **14.45 ms** and **12.48 ms** respectively, roughly an **8x** speedup over the T4. This is one of the nice things about CUDA: the programming model abstracts how work is scheduled and executed, so the same kernel automatically benefits from more SMs, wider memory paths, and better schedulers. Of course, the kernel is nowhere near optimal on these GPUs, but it highlights how well CUDA’s abstraction layer holds up across generations.
 
-The percentile drop also makes sense. Tile parameters tuned for the T4 are not ideal here. The block tiles (BM, BN) and the per-thread tiles (TM, TN) together trade off arithmetic intensity (how much math per byte loaded), register pressure and occupancy (how many warps can stay resident). The T4 and H100/B200 sit in very different regimes, so the optimal balance shifts. Decreasing BK to 8 on the newer GPUs already recovers some performance, bringing the H100 to **91.9** and the B200 to **86.3**. Note that BK cancels out of the block-level arithmetic intensity entirely (both the FLOPs and the bytes per step scale with it), so the gain can't come from better data reuse on paper. It points to an execution or resource effect instead, the smaller fully unrolled inner loop for example. Yet another reminder that the roofline model is not the whole story.
+The percentile drop also makes sense. Tile parameters tuned for the T4 are not ideal here. The block tiles (BM, BN) and the per-thread tiles (TM, TN) together trade off arithmetic intensity (how much math per byte loaded), register pressure and occupancy (how many warps can stay resident). The T4 and H100/B200 sit in very different regimes, so the optimal balance shifts. Decreasing BK to 8 on the newer GPUs already recovers some performance, bringing the H100 to **91.9** and the B200 to **86.3**. Note that BK cancels out of the block-level arithmetic intensity entirely (both the FLOPs and the bytes per step scale with it), so the gain can't come from better data reuse on paper. It points to an execution or resource effect instead, the smaller fully unrolled inner loop for example. Another reminder that the roofline model is not the whole story.
 
-To fully utilise these architectures you would want to use their native features such as TMA for hardware-accelerated tile loads, newer tensor core instructions, and larger shared memory capacities. I'd recommend reading [Modular's Blackwell matmul series](https://www.modular.com/blog/matrix-multiplication-on-nvidias-blackwell-part-1-introduction) and [this worklog on outperforming cuBLAS on the H100](https://cudaforfun.substack.com/p/outperforming-cublas-on-h100-a-worklog) for this.
+To fully utilise these architectures you would want to use their native features such as TMA for hardware-accelerated tile loads, newer tensor core instructions, and larger shared memory capacities. I'd recommend reading [Modular's Blackwell matmul series](https://www.modular.com/blog/matrix-multiplication-on-nvidias-blackwell-part-1-introduction) and [this worklog on outperforming cuBLAS on the H100](https://cudaforfun.substack.com/p/outperforming-cublas-on-h100-a-worklog) for more information on this.
 
 <h2>Resources</h2>
 - [How to Optimize a CUDA Matmul Kernel for cuBLAS-like Performance](https://siboehm.com/articles/22/CUDA-MMM) - Simon Boehm
 - [Matrix Multiplication on GPU](https://www.aleksagordic.com/blog/matmul) - Aleksa Gordic
 - [Matrix Multiplication on NVIDIA's Blackwell](https://www.modular.com/blog/matrix-multiplication-on-nvidias-blackwell-part-1-introduction) - Modular
 - [Outperforming cuBLAS on H100, a worklog](https://cudaforfun.substack.com/p/outperforming-cublas-on-h100-a-worklog) - Pranjal Shankhdhar
-- [My CUDA repo](https://github.com/PhilipBotros/cudafun/tree/main/resources)
+- [CUDA resources I found helpful](https://github.com/PhilipBotros/cudafun/tree/main/resources)
