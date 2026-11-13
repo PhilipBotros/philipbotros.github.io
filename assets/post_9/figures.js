@@ -11,6 +11,12 @@
   const S6 = [4096, 65536, 1048576, 16777216, 268435456, 1073741824];
   const S10 = [4096, 16384, 65536, 262144, 1048576, 4194304, 16777216, 67108864, 268435456, 1073741824];
   const CHARTS = {
+    // Original 24-block results below 16 MiB; tuned full-grid results from 16 MiB.
+    newerfinal: { sizes: S10, series: [
+      { name: 'H100, fused ring', color: C.ring, v: [70.6,72.2,76.1,79.6,92.2,129.6,182.8,439.4,1464.8,5595.7] },
+      { name: 'H100, NCCL', color: C.ring, dash: true, v: [76,77,82,83.2,88.9,110.8,181.8,381.4,1155.4,4071.4] },
+      { name: 'B200, fused ring', color: C.fused, v: [79.1,78.7,80.6,80.8,88,109.7,221,349.1,846.1,2923.2] },
+      { name: 'B200, NCCL', color: C.fused, dash: true, v: [99.1,95.5,106.8,96.5,101.9,122.9,172.8,350.7,793,2687.3] }] },
     t4: { sizes: S9, series: [
       { name: 'copy, serialised', color: C.copy, v: [32.9, 34.1, 54.4, 91.2, 250.9, 937.8, 3623.1, 14384.8, 57428.5] },
       { name: 'copy, async', color: C.ring, v: [19.4, 20.9, 28.2, 73.4, 230.5, 917.2, 3605.1, 14363.4, 57386.1] },
@@ -101,7 +107,7 @@
     // 'rel' plots speed relative to NCCL on a log2 axis, so bulk differences stay visible.
     const rel = mode === 'rel', ref = rel && ch.series.find(s => s.name === 'NCCL');
     const base = rel ? 2 : 10, ly = rel ? Math.log2 : lx;
-    const yv = (s, i) => rel ? ref.v[i] / s.v[i] : s.v[i];
+    const yv = (s, i) => rel ? ref.v[i] / s.v[i] : mode === 'bw' ? sizes[i] / s.v[i] / 1000 : s.v[i];
     let ymin = Infinity, ymax = -Infinity;
     for (const s of ch.series) s.v.forEach((u, i) => { const y = yv(s, i); ymin = Math.min(ymin, y); ymax = Math.max(ymax, y); });
     const y0 = rel ? Math.min(-1, Math.floor(ly(ymin) + 0.02)) : Math.floor(ly(ymin));
@@ -115,7 +121,7 @@
       const t = Math.pow(base, d);
       const gl = el('line', { x1: L, x2: W - R, y1: Y(t), y2: Y(t) }, grid);
       if (rel && d === 0) gl.setAttribute('style', 'stroke:#aab0b4');
-      const lab = rel ? t + 'x' : (t >= 1000 ? (t / 1000) + ' ms' : t + ' µs');
+      const lab = rel ? (ch.percent ? Math.round(t * 100) + '%' : t + 'x') : mode === 'bw' ? String(t) : (t >= 1000 ? (t / 1000) + ' ms' : t + ' µs');
       el('text', { x: L - 8, y: Y(t) + 4, 'text-anchor': 'end' }, axis).textContent = lab;
     }
     (ch.ticks || sizes).forEach((s, i) => {
@@ -124,8 +130,8 @@
     });
     el('text', { x: L + (W - L - R) / 2, y: H - 4, 'text-anchor': 'middle' }, axis).textContent = 'message size per GPU';
     if (!narrow) el('text', { transform: `translate(12,${T + (H - T - B) / 2}) rotate(-90)`, 'text-anchor': 'middle' }, axis)
-      .textContent = rel ? 'speed relative to NCCL' : 'time per all-reduce';
-    else el('text', { x: L - 8, y: T - 2, 'text-anchor': 'end' }, axis).textContent = rel ? 'vs NCCL' : '';
+      .textContent = rel ? 'speed relative to NCCL' : mode === 'bw' ? 'algorithm bandwidth (GB/s)' : 'time per all-reduce';
+    else el('text', { x: L - 8, y: T - 2, 'text-anchor': 'end' }, axis).textContent = rel ? 'vs NCCL' : mode === 'bw' ? 'GB/s' : '';
     for (const s of ch.series) {
       const d = s.v.map((u, i) => (i ? 'L' : 'M') + X(sizes[i]).toFixed(1) + ',' + Y(yv(s, i)).toFixed(1)).join(' ');
       const p = el('path', { d, fill: 'none', stroke: s.color, 'stroke-width': 1.8, 'stroke-linejoin': 'round' }, svg);
@@ -158,7 +164,7 @@
       const W = Math.max(300, Math.round(plot.clientWidth || 800));
       if (!force && W === lastW) return;
       lastW = W;
-      renderChart(fig, plot, tip, ch, mode, W, fig.querySelector('.ar-title').textContent + ', ' + (mode === 'rel' ? 'speed relative to NCCL' : 'latency') + ' against message size');
+      renderChart(fig, plot, tip, ch, mode, W, fig.querySelector('.ar-title').textContent + ', ' + (mode === 'rel' ? 'speed relative to NCCL' : mode === 'bw' ? 'algorithm bandwidth' : 'latency') + ' against message size');
     }
     draw(true);
     if (window.ResizeObserver) new ResizeObserver(() => draw(false)).observe(plot);
@@ -177,7 +183,7 @@
         tip.innerHTML = '<div style="margin-bottom:3px"><b>' + fmtB(size) + '</b> per GPU</div>' + ch.series.map(s => {
           const u = s.v[best], g = size / u / 1000;
           const nc = ch.series.find(q => q.name === 'NCCL');
-          const txt = mode === 'rel' ? (nc.v[best] / u).toFixed(2) + 'x (' + fmtG(g) + ', ' + fmtU(u) + ')'
+          const txt = ch.normalized ? (100 / u).toFixed(1) + '% of same-GPU NCCL' : mode === 'rel' ? (ch.percent ? (100 * nc.v[best] / u).toFixed(1) + '%' : (nc.v[best] / u).toFixed(2) + 'x') + ' (' + fmtG(g) + ', ' + fmtU(u) + ')'
             : fmtU(u) + ' (' + fmtG(g) + ')';
           return '<div><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:' + s.color + ';margin-right:6px"></span>' + s.name + ': <b>' + txt + '</b></div>';
         }).join('');
@@ -742,7 +748,7 @@
       { name: 'Simple', pay: '~100%', note: 'The data is written first, then a separate flag. The receiver waits for the flag before reading.',
         cells: Array(16).fill('d'), flagApart: true },
       { name: 'LL', pay: '50%', note: 'Each 4-byte value is paired with a 4-byte flag. The receiver polls the data itself.', cells: Array(16).fill('h') },
-      { name: 'LL128', pay: '94%', note: 'Each 128-byte line carries one 8-byte flag. Only safe where 128-byte stores arrive whole.',
+      { name: 'LL128', pay: '94%', note: 'Each 128-byte line carries one 8-byte flag. NCCL only uses it where 128-byte stores arrive whole.',
         cells: Array(15).fill('d').concat(['f']) },
     ];
     const wrap = html('div');

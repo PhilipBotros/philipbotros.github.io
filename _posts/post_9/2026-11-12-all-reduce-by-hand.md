@@ -12,9 +12,9 @@ excerpt: <br> Rebuilding the techniques NCCL uses for all-reduce in CUDA, from t
 <link rel="stylesheet" href="/assets/post_9/figures.css">
 <script src="/assets/post_9/figures.js" defer></script>
 
-After working on [matrix multiplication](/2026/08/11/matmul-worklog.html) and reading the [JAX Scaling Book](https://jax-ml.github.io/scaling-book/), I wanted to understand GPU communication at the level of kernels, memory and links. I was curious what the different ways of moving data between them are, and how the topology of a machine affects performance. Implementing an all-reduce by hand seemed like a good way to find out. I started with two T4s over PCIe and eventually worked up to eight A100s, then ran the same kernels on H100s and B200s to see how the optimisations carried over.
+After working on [matrix multiplication](/2026/08/11/matmul-worklog.html) and reading the [JAX Scaling Book](https://jax-ml.github.io/scaling-book/), I wanted to understand GPU communication at a deeper level. I was curious what the different ways of moving data between GPUs are, and how the topology of a machine affects performance. Implementing an all-reduce by hand seemed like a good way to find out. I started with two T4s over PCIe and eventually worked up to eight A100s, then ran the same kernels on H100s and B200s to see how the optimisations carried over.
 
-In distributed training, we use collectives to exchange data and combine results across GPUs. Frameworks like PyTorch usually hand this work to [NCCL](https://developer.nvidia.com/nccl), NVIDIA's Collective Communications Library. All-reduce is a good one to implement: every GPU starts with its own vector, and all of them need to finish with the elementwise sum. One use is combining gradients in data-parallel training, where each GPU processes a different slice of the batch. There, the vector is usually a bucket of gradient tensors flattened into one buffer.
+In distributed training, we use collectives to exchange data and combine results across GPUs. Frameworks like PyTorch usually hand this work to [NCCL](https://developer.nvidia.com/nccl), NVIDIA's Collective Communications Library. All-reduce is a good one to implement. Every GPU starts with its own vector, and all of them need to finish with the elementwise sum. One use is combining gradients in data-parallel training, where each GPU processes a different slice of the batch. There, the vector is usually a bucket of gradient tensors flattened into one buffer.
 
 As with the matmul post, this is a worklog of what I tried and the bottlenecks I ran into. We'll start with a copy and an add kernel, then gradually move more of the work onto the GPUs, comparing each version with NCCL. Everything here happens inside one machine.
 
@@ -33,12 +33,12 @@ Before choosing an all-reduce algorithm, let's look at what determines how quick
 4. **The cost of synchronisation.** GPU 0 can't read GPU 1's vector until GPU 1 has finished writing it, and GPU 1 can't overwrite it while GPU 0 is still reading. Either the host enforces this order with streams and events, or the kernels signal each other directly by setting flags in each other's memory. For small messages, this coordination takes longer than the transfer itself.
 
 <figure class="ar-fig" data-fig="topology">
-  <figcaption>The paths between GPUs: PCIe through the host (grey), NVLink through NVSwitch (green), and a network card on each side between machines (orange).</figcaption>
+  <figcaption>The paths between GPUs are PCIe through the host (grey), NVLink through NVSwitch (green), and a network card on each side between machines (orange).</figcaption>
 </figure>
 
 <h3> 1.1 Copy engine or SMs </h3>
 
-Let's look more closely at the two ways of moving the data. For an all-reduce, we also need to add the values we receive to our local values. Here's what each approach involves for one contribution from GPU 1 to GPU 0:
+For an all-reduce, we also need to add the values we receive to our local values. Here's what each approach involves for one contribution from GPU 1 to GPU 0:
 
 <figure class="ar-fig" data-fig="movers">
   <div class="ar-head"><div class="ar-title">One transfer from GPU 1 to GPU 0</div></div>
@@ -79,7 +79,7 @@ It's easy to assume the second version is faster since it does less work, but we
 
 <h2> 2. What all-reduce does </h2>
 
-Suppose we're training with distributed data parallelism (DDP), and each GPU has computed gradients for its own batch of examples. We want to add the corresponding values together and give every GPU a copy of the result. Each GPU can then divide by the number of GPUs to get the average gradient, so they all make the same model update.
+Suppose we're training with data parallelism, and each GPU has computed gradients for its own batch of examples. We want to add the corresponding values together and give every GPU a copy of the result. Each GPU can then divide by the number of GPUs to get the average gradient, so they all make the same model update.
 
 For a small example, suppose GPU 0 holds `[1, 2]` and GPU 1 holds `[3, 4]`. Adding the matching entries gives `[4, 6]`, and both GPUs need to finish with that vector.
 
@@ -110,7 +110,7 @@ We count this as one communication step because there are no dependent rounds.
 
 The direct version is simple, but reading every other GPU's entire input gets expensive as we add GPUs. The **ring** avoids this by splitting the vector into $P$ chunks and passing partial sums between neighbours. NCCL uses it for large messages on many systems, including the A100 node here. Newer NVSwitch systems can also reduce inside the switch, which we'll look at later.
 
-The ring has two phases. In **reduce-scatter**, each GPU receives one chunk from its left neighbour per step and adds it into its own copy. After $P-1$ steps, every GPU owns one fully summed chunk. We have the answer, but it's split across the GPUs. The **all-gather** phase passes those finished chunks around for another $P-1$ steps so every GPU gets the full result. In total, each GPU receives
+The ring builds the all-reduce out of two smaller collectives, a reduce-scatter followed by an all-gather. In **reduce-scatter**, each GPU receives one chunk from its left neighbour per step and adds it into its own copy. After $P-1$ steps, every GPU owns one fully summed chunk. The **all-gather** phase passes those finished chunks around for another $P-1$ steps so every GPU gets the full result. In total, each GPU receives
 
 $$2 \cdot \frac{P-1}{P} \cdot S \text{ bytes},$$
 
@@ -135,7 +135,7 @@ with $n$ sequential steps and $V$ bytes received per GPU:
 
 The optimisations below either make the steps fewer or cheaper, move fewer bytes, or use more bandwidth. Notice that with two GPUs both algorithms receive $S$ bytes, so the ring's extra step doesn't save us any traffic.
 
-With more GPUs, we'd expect direct to win for small messages, where the fixed cost dominates, and the ring for large ones, where the transfer time does. The graph below plots both formulas with illustrative link parameters. The marker shows PyTorch DDP's [default gradient bucket size](https://docs.pytorch.org/docs/stable/generated/torch.nn.parallel.DistributedDataParallel.html) of 25 MiB (`bucket_cap_mb=25`).
+With more GPUs, we'd expect direct to win for small messages, where the fixed cost dominates, and the ring for large ones, where the transfer time does. The graph below plots both formulas. The marker shows the [default gradient bucket size](https://docs.pytorch.org/docs/stable/generated/torch.nn.parallel.DistributedDataParallel.html) of PyTorch's DistributedDataParallel (DDP), 25 MiB (`bucket_cap_mb=25`).
 
 <figure class="ar-fig" data-fig="model">
   <div class="ar-head"><div class="ar-title">Cost model: ring against direct read</div></div>
@@ -148,13 +148,15 @@ With more GPUs, we'd expect direct to win for small messages, where the fixed co
 
 NVLink adds connections designed for GPU-to-GPU communication, either directly or through NVSwitch. An A100 has up to 300 GB/s in each direction across its NVLink connections, roughly ten times its PCIe bandwidth. The advertised 600 GB/s counts both directions together ([NVIDIA's architecture overview](https://developer.nvidia.com/blog/nvidia-ampere-architecture-in-depth/)).
 
-For scale, Llama 3 8B's feed-forward down-projection matrix has shape 4,096 × 14,336: about 59 million parameters, or 117 MB of BF16 gradients. For a local batch of 2,048 tokens, its forward and backward matrix multiplications take about 722 GFLOPs, or 2.3 ms at the A100's peak BF16 throughput. A ring all-reduce over eight GPUs sends 1.75 times the gradient size from each GPU, about 205 MB. Assuming BF16 gradient communication and full interconnect bandwidth, that gives idealised transfer times of roughly 6.4 ms over PCIe and 0.7 ms over NVLink. The PCIe estimate is nearly three times the matrix's compute time at peak throughput. NVLink makes communication much easier to overlap with the remaining backward pass.
+For scale, Llama 3 8B's feed-forward down-projection matrix has shape 4,096 × 14,336, which is about 59 million parameters, or 117 MB of BF16 gradients. For a local batch of 2,048 tokens, its forward and backward matrix multiplications take about 722 GFLOPs, or 2.3 ms at the A100's peak BF16 throughput. A ring all-reduce over eight GPUs sends 1.75 times the gradient size from each GPU, about 205 MB. Assuming BF16 gradient communication and full interconnect bandwidth, that gives idealised transfer times of roughly 6.4 ms over PCIe and 0.7 ms over NVLink. The PCIe estimate is nearly three times the matrix's compute time at peak throughput. NVLink makes communication much easier to overlap with the remaining backward pass.
 
 </div>
 
 <h2> 3. Starting on PCIe </h2>
 
-Let's start testing on real hardware, with two GPUs over PCIe. Later we'll move to NVLink.
+I started with two GPUs over PCIe before moving to NVLink.
+
+Every time in this post is the median of 100 runs, or 20 for messages of 64 MB and up. The clock starts at the first call and stops once every GPU has finished.
 
 <h3> 3.1 Two T4s </h3>
 
@@ -166,7 +168,7 @@ The first VM had two T4s on PCIe 3.0 ×16 through a host bridge, with peer acces
 
 The two copies don't depend on each other, so we can give each GPU its own stream and make the copies asynchronous. PCIe is full duplex, meaning data can travel in both directions at once. If the rest of the path supports that too, overlapping the copies should get us closer to the time of a single transfer. At 4 KB, this brings the total down to 19 µs.
 
-Overlapping the copies helps at 4 KB, but does it also let us move large inputs in both directions at full speed? To separate the transfer from the addition, I timed the copies on their own. A single 256 MB copy takes 27 ms. Two copies in opposite directions start within 10 µs of each other, but both take 54 ms: roughly **9.9 GB/s combined**. The two transfers appear to share a limit somewhere on this VM's path. One candidate is [ACS redirecting peer traffic up through the host bridge](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/troubleshooting/gpu_troubleshooting.html#pci-access-control-services-acs), but I couldn't check that on this VM.
+Overlapping the copies helps at 4 KB, but does it also let us move large inputs in both directions at full speed? To separate the transfer from the addition, I timed the copies on their own. A single 256 MB copy takes 27 ms. Two copies in opposite directions start within 10 µs of each other, but both take 54 ms, roughly **9.9 GB/s combined**. The two transfers appear to share a limit somewhere on this VM's path. One candidate is [ACS redirecting peer traffic up through the host bridge](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/troubleshooting/gpu_troubleshooting.html#pci-access-control-services-acs), but I couldn't check that on this VM.
 
 What about passing the peer pointer straight into the add kernel? That removes the separate copy submission and the temporary buffer. It cuts 4 KB latency to **14 µs**, but for large messages it's actually slower. One GPU reading gets 7.05 GB/s, and both reading get about 3.6 GB/s each. So there's another shared limit, about **7.2 GB/s for SM reads**. I tried grid-stride loops and `float4` loads, but neither made much difference.
 
@@ -176,16 +178,16 @@ NCCL chose host staging despite CUDA peer access. Sending data directly between 
 
 <figure class="ar-fig" data-fig="chart" data-chart="t4" data-mode="rel">
   <div class="ar-head"><div class="ar-title">Two T4s over PCIe 3.0</div></div>
-  <figcaption>Speed relative to NCCL on the two T4s. Hover for GB/s and times.</figcaption>
+  <figcaption>Hover for GB/s and times.</figcaption>
 </figure>
 
 <h3> 3.2 Four L4s without peer access </h3>
 
-With two GPUs, each one only needs the other's input. Let's move to four, where the ring starts to save traffic: each GPU receives $1.5S$ against direct's $3S$. The price is six dependent communication steps.
+With two GPUs, each one only needs the other's input. On four GPUs, the ring starts to save traffic. Each GPU receives $1.5S$ against direct's $3S$. The price is six dependent communication steps.
 
-The next VM was a **g6.12xlarge** with four L4s on PCIe 4.0. That gives us a higher theoretical link bandwidth than the T4's PCIe 3.0, but there was a catch: it didn't allow CUDA peer access between any pair. Both NCCL and my copy ring therefore stage through host memory, though through different paths: NCCL uses its shared-memory transport and CPU proxies, while the ring submits staged copy-engine transfers.
+The next VM was a **g6.12xlarge** with four L4s on PCIe 4.0. That gives us a higher theoretical link bandwidth than the T4's PCIe 3.0, but there was a catch. It didn't allow CUDA peer access between any pair. Both NCCL and my copy ring therefore stage through host memory, though through different paths. NCCL uses its shared-memory transport and CPU proxies, while the ring submits staged copy-engine transfers.
 
-The ring still follows the reduce-scatter and all-gather schedule from section 2. For each reduce-scatter step, we copy a neighbour's partial sum into a local buffer and launch an add kernel. During all-gather, we only copy the finished chunks. Streams and events make each step wait for the previous one to produce its input, and the host submits every step.
+The ring still follows the reduce-scatter and all-gather schedule from section 2. For each reduce-scatter step, we copy a neighbour's partial sum into a local buffer and launch an add kernel. During all-gather, we only copy the finished chunks. We use streams and events so a step only starts once the previous one has finished. All of it is submitted from one host thread.
 
 <figure class="ar-fig" data-fig="machine" data-machine="l4">
   <div class="ar-head"><div class="ar-title">Machine: four L4s</div></div>
@@ -193,22 +195,22 @@ The ring still follows the reduce-scatter and all-gather schedule from section 2
 
 <div class="ar-note" markdown="1">
 
-**Note: algorithm and bus bandwidth.** For the multi-GPU comparisons, we'll report **algorithm bandwidth**, the message size per GPU divided by the time. NCCL's tools also print [*bus bandwidth*](https://github.com/NVIDIA/nccl-tests/blob/master/doc/PERFORMANCE.md), which multiplies that by $2(P-1)/P$ to count the number of bytes a ring moves per GPU, so it can be set against link speed. That factor is 1.5 on four GPUs and 1.75 on eight. Apply it when comparing these numbers with bus bandwidth reported elsewhere.
+**Note: algorithm and bus bandwidth.** For the multi-GPU comparisons, we'll report **algorithm bandwidth**, the message size per GPU divided by the time. NCCL's tools also print [*bus bandwidth*](https://github.com/NVIDIA/nccl-tests/blob/master/doc/PERFORMANCE.md), which multiplies that by $2(P-1)/P$ to count the number of bytes a ring moves per GPU, so it can be set against link speed. That factor is 1.5 on four GPUs and 1.75 on eight. Apply it when comparing these numbers with bus bandwidth reported elsewhere. Message sizes are powers of two, so 256 MB is $2^{28}$ bytes, and GB/s means $10^9$ bytes per second.
 
 </div>
 
 At 256 MB the copy ring's bandwidth is **1.7x NCCL's**. NVIDIA's `nccl-tests` gets 3.8 GB/s against 3.7 in my benchmark, so my timing code doesn't explain NCCL's result. A g5.12xlarge with four A10Gs, also without peer access, gave the same picture at 2x.
 
-At 4 KB, though, NCCL takes **42 µs** against the ring's **239 µs**. Each GPU needs six staged copies and three add kernels, plus event dependencies. One host thread submits all of it: 24 staged copies and 12 add kernels across the four GPUs. There's hardly any data to move, but the host still has to issue every step. NCCL runs the GPU work in one kernel per GPU. It still leads at 1 MB, and the copy ring pulls ahead at 4 MB.
+At 4 KB, though, NCCL takes **42 µs** against the ring's **239 µs**. Each GPU needs six staged copies and three add kernels, plus event dependencies. One host thread submits all of it, 24 staged copies and 12 add kernels across the four GPUs. There's hardly any data to move, but the host still has to issue every step. NCCL runs the GPU work in one kernel per GPU. It still leads at 1 MB, and the copy ring pulls ahead at 4 MB.
 
 **4 KB: 239 µs, 256 MB: 6.4 GB/s** (NCCL: 42 µs, 3.7 GB/s)
 
 <figure class="ar-fig" data-fig="chart" data-chart="l4" data-mode="rel">
   <div class="ar-head"><div class="ar-title">Four L4s over PCIe 4.0, no peer access</div></div>
-  <figcaption>The copy ring overtakes NCCL between 1 and 4 MB. “Copy all inputs, then sum” is the direct algorithm with staged copies.</figcaption>
+  <figcaption>“Copy all inputs, then sum” is the direct algorithm with staged copies.</figcaption>
 </figure>
 
-The host is spending most of the small-message time submitting work. We'd like to move that work into one kernel, but that requires peer access. Before moving on, I tried one more PCIe VM that has it.
+The host is spending most of the small-message time submitting work. We'd like to move that work into one kernel, but that requires peer access. Before moving on, I tried one more PCIe VM that has peer access.
 
 <h3> 3.3 Four L4s with peer access </h3>
 
@@ -231,7 +233,7 @@ Small messages don't have that problem. At 4 KB, direct read takes **23 µs**, a
 
 <h2> 4. Moving to NVLink: eight A100s </h2>
 
-So far every transfer has gone over PCIe. The **p4d.24xlarge** has eight A100s that are also connected by NVLink: each GPU's links go to NVSwitch, which connects every GPU to every other. Each GPU has 300 GB/s per direction shared across peers. For scale, [NVIDIA lists 600 GB/s of bidirectional NVLink bandwidth against 64 GB/s for PCIe 4.0 x16](https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/a100/pdf/nvidia-a100-datasheet.pdf), roughly a 10x difference in theoretical bandwidth. Every GPU can access every other's memory, and NCCL uses its P2P transport.
+So far every transfer has gone over PCIe. The **p4d.24xlarge** has eight A100s that are also connected by NVLink. Each GPU's links go to NVSwitch, which connects every GPU to every other. Each GPU has [300 GB/s per direction](https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/a100/pdf/nvidia-a100-datasheet.pdf) shared across peers. Every GPU can access every other's memory, and NCCL uses its P2P transport.
 
 <figure class="ar-fig" data-fig="machine" data-machine="a100">
   <div class="ar-head"><div class="ar-title">Machine: eight A100s</div></div>
@@ -243,26 +245,27 @@ Now that every GPU can read its neighbours' memory, we can do the transfers and 
 
 <h3> 4.1 Host-driven ring </h3>
 
-First, let's run the copy ring unchanged on two, four and eight A100s.
+I ran the copy ring unchanged on two, four and eight A100s.
 
 Its 4 KB latency rises from 58 µs on two GPUs to 219 µs on four and **1149 µs on eight**, staying roughly flat through 16 MB. One host thread submits $P \cdot 2(P-1) = 112$ copies on eight GPUs. At about 10 µs per submission, that accounts for nearly the whole 1.1 ms. NCCL takes about 104 µs.
 
 **Copy ring, 4 KB: 1149 µs, 256 MB: 90 GB/s** (NCCL: 104 µs, 116 GB/s)
 
-On the T4, peer reads saved submission work but lost bandwidth. Let's try them again here: NVLink gives the SMs a different path to peer memory, so the T4 result needn't carry over. Between two A100s they reach 233 GB/s, against 164 GB/s for a copy-engine pull. An eight-GPU ring that reads the neighbour inside its add kernel now beats the copy ring at bulk, but the host still submits every step.
+At 256 MB, that's about **14x the 6.4 GB/s** the copy ring managed on four L4s with host staging over PCIe, even with twice as many GPUs participating. This compares different machines and transfer paths, rather than isolating NVLink's contribution, but it shows how much the PCIe setup was holding us back. Small-message latency barely changes at the same GPU count: the four-A100 copy ring takes **219 µs at 4 KB**, against **239 µs on four L4s**. The faster link helps bulk transfers; it doesn't remove the host's submission work.
+
+On the T4, peer reads saved submission work but lost bandwidth. NVLink gives the SMs a different path to peer memory, so the T4 result needn't carry over. Between two A100s they reach 233 GB/s, against 164 GB/s for a copy-engine pull. An eight-GPU ring that reads the neighbour inside its add kernel now beats the copy ring at bulk, but the host still submits every step.
 
 **Remote-read ring, 4 KB: 821 µs, 256 MB: 118 GB/s** (NCCL: 104 µs, 116 GB/s)
 
 <figure class="ar-fig" data-fig="chart" data-chart="a100h" data-mode="lat">
   <div class="ar-head"><div class="ar-title">Eight A100s over NVLink, host-driven</div></div>
-  <figcaption>Both host-driven rings stay flat up to 16 MB, because the host submits every step.</figcaption>
 </figure>
 
-The chart also includes both direct baselines from section 2: copying all inputs before summing, and reading them remotely in one kernel. Remote direct read already takes just 45 µs at 4 KB, ahead of NCCL. We'll return to it in section 4.7 after tuning the ring. The host-driven ring is close to NCCL at bulk, but still about eight times slower at 4 KB.
+The chart also includes both direct baselines from section 2, copying all inputs before summing and reading them remotely in one kernel. Remote direct read already takes just 45 µs at 4 KB, ahead of NCCL. We'll return to it in section 4.7 after tuning the ring. The host-driven ring is close to NCCL at bulk, but still about eight times slower at 4 KB.
 
 <h3> 4.2 NCCL uses a fraction of the SMs </h3>
 
-Our simple add kernel is slightly faster than NCCL at bulk, which I didn't expect, so I looked at NCCL's debug output. NCCL handles transfers, additions and synchronisation in one kernel per GPU and splits the work into *channels*. A channel is one copy of the ring working on its own slice of the vector, with its own buffers and flags, and each channel runs in one thread block. With `NCCL_DEBUG=INFO`, NCCL reports **24 channels** on this machine, so it occupies **at most 24 of the A100's 108 SMs**. Our add kernels launch one thread per element, which for these sizes means thousands of blocks spread across all 108 SMs.
+Our simple add kernel is slightly faster than NCCL at bulk, which I didn't expect, so I did a bit of digging into NCCL. NCCL handles transfers, additions and synchronisation in one kernel per GPU and splits the work into *channels*. A channel is one copy of the ring working on its own slice of the vector, with its own buffers and flags, and each channel runs in one thread block. With `NCCL_DEBUG=INFO`, NCCL reports **24 channels** on this machine, so it occupies **at most 24 of the A100's 108 SMs**. Our add kernels launch one thread per element, which for these sizes means thousands of blocks spread across all 108 SMs.
 
 NCCL's small footprint is deliberate. In training, the all-reduce runs at the same time as the backward pass, and every SM it occupies is one the compute kernels can't use. Matching NCCL's bandwidth with the whole GPU isn't a fair comparison, so on the A100 we'll hold our kernels to 24 blocks of 512 threads, NCCL's default block size. Can we sustain the same bandwidth that way?
 
@@ -304,18 +307,17 @@ With float4 loads, the 24 x 512 launch is back to the same bandwidth as launchin
 
 <figure class="ar-fig" data-fig="chart" data-chart="sm" data-mode="rel">
   <div class="ar-head"><div class="ar-title">Eight A100s, remote-read ring at NCCL's launch budget</div></div>
-  <figcaption>At 24 blocks of 512 threads the scalar kernel loses two thirds of its bandwidth at bulk. The float4 kernel, with four loads in flight per thread, doesn't.</figcaption>
 </figure>
 
 The bandwidth is back without a bigger grid, but small-message latency is still 6 to 10x NCCL's, because the host still submits every step of the ring.
 
 <h3> 4.4 One kernel per GPU </h3>
 
-Let's keep the ring's steps and waits, but move the signalling into the kernel. Instead of the CPU queuing a wait and a "done" marker around every step, each GPU waits for its neighbour and signals it itself, through a flag in memory.
+Wider loads recovered the large-message bandwidth, but at 4 KB the host-driven ring is still about 8x slower than NCCL. Each step moves only 512 bytes per GPU, yet the CPU has to submit a separate copy or kernel and the events that order it. Making those tiny transfers faster won't remove that submission cost.
 
-The ring will still have fourteen dependent steps. We'll just avoid returning to the host to submit each one.
+We can reduce the host's work to one kernel launch per GPU by putting the whole ring inside the kernel. That means the GPUs also have to enforce the dependencies themselves: each GPU waits for its neighbour and signals when its own data is ready, through a flag in memory. The fourteen dependent steps remain, but the CPU no longer has to submit each one.
 
-To see what moves into the kernel, let's look at the reduce-scatter half of the host-driven ring. Here `off(c)` and `len(c)` give the start and length of chunk `c`. The first step reads a neighbour's original input, and later steps read the partial sum it produced:
+Here is the reduce-scatter half of the host-driven ring. Here `off(c)` and `len(c)` give the start and length of chunk `c`. The first step reads a neighbour's original input, and later steps read the partial sum it produced:
 
 ```cuda
 // Host code: one CPU thread queues every step for every GPU.
@@ -358,9 +360,9 @@ __global__ void ring_fused_kernel(FusedArgs a, int me, int P, int N, unsigned ba
 }
 ```
 
-The rounds and data dependencies stay the same. We use one flag per block: block $b$ handles the same slice on every GPU, so it only waits for the matching block on its neighbour, not the whole GPU. These are the channels from section 4.2, each coordinating independently.
+The rounds and data dependencies stay the same. We use one flag per block. Block $b$ handles the same slice on every GPU, so it only waits for the matching block on its neighbour, not the whole GPU. These are the channels from section 4.2, each coordinating independently.
 
-That leaves the two operations used in the kernel above: `wait_step` and `signal_step`. Each flag is a step counter in the signalling GPU's memory. To wait, one thread repeatedly reads its neighbour's counter over NVLink until the required step is complete, while the other threads wait at a block barrier. To signal, the block finishes its writes and publishes the new counter value:
+That leaves the two operations used in the kernel above, `wait_step` and `signal_step`. Each flag is a step counter in the signalling GPU's memory. To wait, one thread repeatedly reads its neighbour's counter over NVLink until the required step is complete, while the other threads wait at a block barrier. To signal, the block finishes its writes and publishes the new counter value:
 
 ```cuda
 __device__ void wait_step(const unsigned* f, unsigned v) {     // f is on the neighbour
@@ -383,9 +385,9 @@ Reducing host submissions to $P$ kernel launches cut 4 KB latency from **840 µs
 | 8x A100, one process | 16 MB | 256 MB | 1 GB |
 |------|-----|-----|-----|
 | ring, fused kernel | **63 GB/s** | **126 GB/s** | **131 GB/s** |
-| NCCL | 52 GB/s | 115 GB/s | 128 GB/s |
+| NCCL | 52 GB/s | 116 GB/s | 128 GB/s |
 
-**4 KB: 261 µs, 256 MB: 126 GB/s** (NCCL: 104 µs, 115 GB/s)
+**4 KB: 261 µs, 256 MB: 126 GB/s** (NCCL: 104 µs, 116 GB/s)
 
 At bulk the fused ring now matches or beats NCCL. At 4 KB it's still 2.5x behind. With eight GPUs and a 4 KB input each chunk is only 512 bytes, so almost none of that is transfer time. Every one of the fourteen steps still publishes a flag and polls for one.
 
@@ -394,11 +396,9 @@ At bulk the fused ring now matches or beats NCCL. At 4 KB it's still 2.5x behind
   <figcaption>Grey is the host issuing work, blue is a GPU running a step. The bars underneath compare the measured times.</figcaption>
 </figure>
 
-We still have fourteen rounds. Next, let's make each exchange cheaper.
-
 <h3> 4.5 The LL protocol </h3>
 
-So far, a receiver waits for a separate flag before reading the data, similar to what NCCL calls its *Simple* protocol. For small messages, NCCL switches to its *LL* (low latency) protocol, which packs each FP32 value with a flag so the data itself shows when it's ready. Let's see how much of NCCL's small-message lead this accounts for. Our version pushes `{data, flag, data, flag}` words into the receiver's memory. The receiver polls locally until both flags match the expected step, then uses the accompanying data.
+So far, a receiver waits for a separate flag before reading the data, similar to what NCCL calls its *Simple* protocol. For small messages, NCCL switches to its *LL* (low latency) protocol, which packs each FP32 value with a flag so the data itself shows when it's ready. Our version pushes `{data, flag, data, flag}` words into the receiver's memory. The receiver polls locally until both flags match the expected step, then uses the accompanying data.
 
 <figure class="ar-fig" data-fig="protocols">
   <div class="ar-head"><div class="ar-title">Data and flags in NCCL's protocols</div></div>
@@ -418,20 +418,19 @@ float2 r = make_float2(as_float(w.x), as_float(w.z));
 
 Pairing every value with a flag doubles the bytes we send, so we only use LL for chunks up to 1 MB and keep separate flags above that. With LL and the single release store, the final kernel drops from 261 to 82 µs at 4 KB. That's the first time the ring is ahead of NCCL at small sizes.
 
-**4 KB: 82 µs, 256 MB: 126 GB/s** (NCCL: 104 µs, 115 GB/s)
+**4 KB: 82 µs, 256 MB: 126 GB/s** (NCCL: 104 µs, 116 GB/s)
 
 <figure class="ar-fig" data-fig="chart" data-chart="fused" data-mode="lat">
   <div class="ar-head"><div class="ar-title">Eight A100s, from host-driven ring to fused kernel, 24 x 512</div></div>
-  <figcaption>One host process. The final fused curve uses LL for chunks up to 1 MB.</figcaption>
 </figure>
 
 It passes the output checks, but it relies on each 8-byte data/flag pair arriving together, an assumption NCCL's LL also makes but the [PTX memory model](https://docs.nvidia.com/cuda/parallel-thread-execution/#memory-operations-on-vector-data-types) doesn't guarantee for vector stores.
 
 <h3> 4.6 One process per GPU </h3>
 
-But wait a minute, multi-GPU training in PyTorch doesn't run from one process. DDP starts one process per GPU, and so far a single host thread has been launching all eight kernels one after another. Giving each GPU its own process lets them submit concurrently.
+So far I'd used one host thread to submit work to all eight GPUs, both for my kernels and for NCCL. Typical DDP training uses one process per GPU, which lets the processes submit their work concurrently. I wanted to see how much of the remaining small-message latency came from this difference in how the benchmark launches work.
 
-NCCL has been running the same way. The one thread calls `ncclAllReduce` for each of the eight GPUs inside an `ncclGroupStart`/`ncclGroupEnd` pair, then synchronises the eight devices one after another. With a process per GPU, each rank makes one call and waits on its own stream, so we need to measure the baseline again.
+In the existing NCCL benchmark, the thread calls `ncclAllReduce` for each GPU inside an `ncclGroupStart`/`ncclGroupEnd` pair, then synchronises the eight devices one after another. With one process per GPU, each rank makes its own call and waits on its own stream, so this changes the NCCL baseline as well as my kernels' timings.
 
 We fork before CUDA initialisation, map peer buffers with CUDA IPC, and initialise NCCL with `ncclCommInitRank`:
 
@@ -447,24 +446,26 @@ cudaSetDevice(rank);
 cudaMalloc(&in[rank], bytes);
 cudaIpcGetMemHandle(&sh->hin[rank], in[rank]);
 if (rank == 0) ncclGetUniqueId(&sh->id);
-barrier();
+barrier();   // wait until every rank has exported its handle
 for (int r = 0; r < P; r++)
   if (r != rank)
     cudaIpcOpenMemHandle((void**)&in[r], sh->hin[r], cudaIpcMemLazyEnablePeerAccess);
 ncclCommInitRank(&comm, P, sh->id, rank);
 ```
 
-With concurrent submission, NCCL's 4 KB time falls from **104 to 34 µs**, and the fused LL ring falls from **82 to 42 µs**. The ring now loses to NCCL at small sizes and only pulls ahead from 16 MB.
+With concurrent submission, NCCL's 4 KB time falls from **104 to 34 µs**, a **3x speedup!** Our fused LL ring falls from **82 to 42 µs**, roughly cutting latency in half. The ring now loses to NCCL at small sizes and only pulls ahead from 16 MB.
 
 **4 KB: 42 µs, 256 MB: 128 GB/s** (NCCL: 34 µs, 118 GB/s)
 
-NCCL just got 3x faster at 4 KB and we didn't touch a single kernel!
+<h3> 4.7 Picking the algorithm by size </h3>
 
-<h3> 4.7 Algorithm by message size </h3>
+For the final optimisation, we choose the algorithm based on the message size: direct read for small inputs and the fused ring for large ones. We've made the ring faster, but it still needs fourteen dependent rounds on eight GPUs. For small inputs, we can avoid those rounds entirely: each GPU reads every other GPU's input and computes the full sum itself, using the direct-read algorithm from section 2. Each GPU reads more remote data, $7S$ instead of the ring's $1.75S$, but when the input is only a few KB, avoiding the rounds can matter more than moving fewer bytes.
 
-We've focused the tuning on the ring. Let's now return to the direct baselines in section 4.1: for a small message, do we need a ring at all? On eight GPUs it still takes fourteen dependent rounds. The direct algorithm from section 2 reads every input in a single kernel, reducing $n$ to one. Remote traffic $V$ increases from $1.75S$ to $7S$ per GPU, but with only a few KB to move that may be a good trade.
+NCCL makes this kind of choice too, with more options and a more detailed model. Its [tuning model](https://developer.nvidia.com/blog/understanding-nccl-tuning-to-accelerate-gpu-to-gpu-communication/) estimates which algorithm and protocol will be fastest for the message size, number of GPUs and machine topology. That means our NCCL baseline isn't one fixed algorithm across the whole sweep. Our direct-read/ring cutoff is a much simpler version of the same idea.
 
-The kernel below applies the same independent-load idea from section 4.3, now loading a value from every GPU before summing. The dispatch uses direct read while $(P-1)S$, the remote bytes read per GPU, stays within 8 MB, then switches to the fused ring.
+The cutoff between the two kernels is based on the total remote data each GPU reads, $(P-1)S$. If that is at most 8 MiB, we use direct read; otherwise we use the ring. On eight GPUs, that puts the cutoff at an input size of about 1.14 MiB per GPU.
+
+The direct-read kernel below loads a value from every GPU before summing, using the independent-load idea from section 4.3. The `auto_dispatch` function makes the choice between this kernel and the fused ring. As with the earlier direct-read benchmark, input readiness and buffer lifetime are enforced outside the timed call; we'll account for that limitation when comparing the results.
 
 ```cuda
 __global__ void sum_all4(Ptrs in, float4* out, int P, int n4) {
@@ -484,7 +485,7 @@ void auto_dispatch(int N) {   // direct read while traffic is small, ring after 
 }
 ```
 
-There's a catch: direct read has no flags at all. My benchmark makes every input ready before timing and keeps the buffers alive until all readers finish, while NCCL does that coordination inside its call. With that head start, direct read is twice as fast as NCCL at 4 KB. So this isn't a drop-in training speedup.
+Direct read has no flags at all. My benchmark makes every input ready before timing and keeps the buffers alive until all readers finish, while NCCL does that coordination inside its call. With that head start, direct read is twice as fast as NCCL at 4 KB. So this isn't a drop-in training speedup.
 
 **4 KB: 16 µs, 256 MB: 128 GB/s** (NCCL: 34 µs, 118 GB/s)
 
@@ -494,14 +495,27 @@ The combined dispatch is ahead of NCCL at every tested size except around the cr
 
 <figure class="ar-fig" data-fig="chart" data-chart="mp" data-mode="lat">
   <div class="ar-head"><div class="ar-title">Eight A100s, one process per GPU</div></div>
-  <figcaption>One process per GPU. The dashed line is single-process NCCL.</figcaption>
 </figure>
 
-Direct read helps at small sizes, as the model suggested. But changing the host setup had already cut NCCL's latency from 104 to 34 µs before we changed any kernels.
+Here's the progression on eight A100s, expressed as a percentage of NCCL's speed: **100% matches NCCL, and higher is faster**. Each row uses the NCCL baseline from the same sweep and process setup. The first six changes use one host process; the last two use one process per GPU.
+
+| Change | 4 KB speed (% of NCCL) ↑ | 256 MB speed (% of NCCL) ↑ |
+|---|---:|---:|
+| Host-driven copy ring | 9% | 78% |
+| Read the peer inside the add kernel | 13% | 102% |
+| Limit the scalar kernel to 24 × 512 threads | 14% | 36% |
+| Issue independent `float4` loads | 14% | 104% |
+| Fuse the ring into one kernel per GPU, with per-thread fences | 40% | 104% |
+| Use LL for small chunks and a single release store for the separate-flag path | 127% | 109% |
+| Submit from one process per GPU | 82% | 109% |
+| Choose direct read for small inputs, fused ring for large ones | 218% | 109% |
+| NCCL baseline | 100% | 100% |
+
+Speed is calculated as NCCL time divided by our time, using the unrounded measurements. For example, 109% means 9% faster than NCCL.
 
 <h2> 5. Newer GPUs: what changes on the H100 and B200 </h2>
 
-We've tuned the kernels for one A100 machine. What happens if we give the same code a faster connection? As in the matmul post, let's run it on newer hardware while keeping the A100's 24 x 512 launch budget.
+I then ran the same kernels on H100s and B200s, keeping the A100's 24 x 512 launch budget to see how the tuning carried over.
 
 The H100 provides 1.5x the A100's NVLink bandwidth, and the B200 provides 3x. If our kernels can keep the links busy, large-message times should fall roughly in proportion. These systems also support reduction inside the switch, called NVLink SHARP (NVLS), giving NCCL another way to move fewer bytes. We'll come back to this in section 5.2.
 
@@ -513,15 +527,15 @@ The H100 provides 1.5x the A100's NVLink bandwidth, and the B200 provides 3x. If
 |---|---|---|---|
 | NVLink per GPU, per direction | 300 GB/s | 450 GB/s | 900 GB/s |
 | In-switch reduction (NVLS) | no | yes | yes |
-| NCCL channels for the ring | 24 | not captured | 32 |
+| NCCL channels for the ring | 24 | 24 | 32 |
 
-The first surprise was that the B200 ran our fused ring no faster than the A100: 126 GB/s at 256 MB on both, with three times the link. Let's start by checking whether the kernel is giving the faster link enough work.
+The first surprise was that the B200 ran our fused ring no faster than the A100. Both reach 126 GB/s at 256 MB, and the B200 has three times the link.
 
 <h3> 5.1 Grid size and loads on the B200 </h3>
 
-The B200 doubles the H100's NVLink bandwidth, but our kernel still has the same 24 blocks issuing four 16-byte loads per thread. If latency stays similar, a faster link needs more bytes in flight to keep it busy. We ran into this when shrinking the A100 grid. Perhaps we've hit the same problem by making the link faster.
+Our kernel still uses the A100's launch configuration: 24 blocks issuing four 16-byte loads per thread. The B200 has three times the NVLink bandwidth, so we may need more outstanding loads to use it. On the A100, shrinking the grid left too few loads outstanding. Keeping that grid fixed while increasing link bandwidth could leave us with the same bottleneck.
 
-At 24 x 512 the fused ring reaches only **126 GB/s** at 256 MB, compared with NCCL's **338**. To test whether more concurrency would help, I swept the fused kernel over block counts and loads per thread in a separate session.
+At 24 x 512 the fused ring reaches only **126 GB/s** at 256 MB, compared with NCCL's **338**. To test whether more concurrency would help, I swept the fused kernel over block counts and loads per thread.
 
 One thing I didn't expect came up before the sweep. Rewriting the inner loop so the four loads go through a small array and `#pragma unroll`, instead of four named variables, took the 24 x 512 number from **126 to 160 GB/s** on its own, with the same four loads per thread. On the full grid both versions reach 317 to 321 GB/s, so it only shows when the grid is too small to hide it.
 
@@ -565,29 +579,27 @@ The table uses the array version throughout.
 | 96 blocks | 314 | 316 | 291 |
 | 148 blocks (full grid) | 317 | 315 | 302 |
 
-Increasing either knob helps, and the best configurations reach about **315 GB/s**. That is where NCCL's own ring lands with NVLS disabled. NCCL's logs on this node show 32 channels for its ring, against 24 on the A100, and at 32 blocks, 16 loads per thread gets there too.
+Increasing either knob helps, and the best configurations reach about **315 GB/s**, close to the 327 GB/s NCCL's own ring gets with NVLS disabled. NCCL's logs on this node show 32 channels for its ring, against 24 on the A100, and at 32 blocks, 16 loads per thread gets there too.
 
 **B200, 256 MB: 126 → 317 GB/s** (NCCL ring: 327 GB/s, NCCL with NVLS: 338 GB/s)
 
-The estimate from section 4.3 says 24 x 512 with four loads should already saturate the link, yet it only reaches 160 GB/s, so that model is too simple. More blocks works better than deeper unrolling at the same bytes in flight. Deep unrolling also hurts the smaller sizes: at 16 MB on 24 blocks, 16 loads per thread gets 38 GB/s against 55 with four.
+The estimate from section 4.3 says 24 x 512 with four loads should already saturate the link, yet it only reaches 160 GB/s, so that model is too simple. More blocks works better than deeper unrolling at the same bytes in flight. Deep unrolling also hurts the smaller sizes. At 16 MB on 24 blocks, 16 loads per thread gets 38 GB/s against 55 with four.
 
-The H100 doesn't have this problem. The same sweep there only moves the fused ring between **181 and 186 GB/s** at 256 MB, whatever the block count or loads per thread. One configuration didn't run at all: the 16-load version at 24 x 512 failed to launch on the H100 with a register error, although the same source launched on the B200.
+The H100 doesn't have this problem. The same sweep there only moves the fused ring between **181 and 186 GB/s** at 256 MB, whatever the block count or loads per thread. One configuration didn't run at all. The 16-load version at 24 x 512 failed to launch on the H100 with a register error, although the same source launched on the B200.
 
 At 1 GB, the tuned rings reach about 131, 192 and 365 GB/s on A100, H100 and B200. Multiplied by the ring's 1.75 traffic factor, that's 229, 336 and 639 GB/s on the link, or roughly 76%, 75% and 71% of each GPU's per-direction NVLink rating.
 
-That leaves default NCCL, which can also do the reduction inside the switch.
-
 <h3> 5.2 In-switch reduction (NVLS) </h3>
 
-Up to this point, every addition has happened on a GPU: the switch forwards the partial sums, and our kernels combine them. The H100 and B200 systems here support **[NVLink SHARP (NVLS)](https://arxiv.org/abs/2507.04786)**, which lets the switch participate in the reduction. Contributions can be summed inside NVSwitch and multicast back. InfiniBand SHARP applies the same idea between machines.
+Up to this point, every addition has happened on a GPU. The switch forwards the partial sums, and our kernels combine them. The H100 and B200 systems here support **[NVLink SHARP (NVLS)](https://arxiv.org/abs/2507.04786)**, which lets the switch participate in the reduction. Contributions can be summed inside NVSwitch and multicast back. InfiniBand SHARP applies the same idea between machines.
 
 This reduces the data each GPU sends and receives to a little over $S$, compared with the eight-GPU ring's $1.75S$. Our peer-read kernel can't use that reduction hardware. To check how much of NCCL's lead comes from it, we can disable NVLS and measure again.
 
-On the H100 it's most of the lead. At 256 MB, NCCL reaches **232 GB/s** compared with our ring's **179**. Disabling NVLS reduces NCCL to **191 GB/s**. After the grid sweep from 5.1, the two plain rings are close to level.
+On the H100 it's most of the lead. At 256 MB, NCCL reaches **232 GB/s** compared with our ring's **179**. Disabling NVLS reduces NCCL to **190 GB/s**. After the grid sweep from 5.1, the two plain rings are close to level.
 
 **H100, 256 MB: 186 GB/s** (NCCL ring: 190 GB/s, NCCL with NVLS: 232 GB/s)
 
-On the B200 it matters less. Disabling NVLS costs NCCL **3%** at 256 MB and **8%** at 1 GB. The tuned ring is already close to NCCL's plain ring, so NVLS is most of the remaining gap. Using `multimem` instructions on a multicast mapping would let us explore it ourselves.
+On the B200 it matters less. Disabling NVLS costs NCCL **3%** at 256 MB and **8%** at 1 GB. The tuned ring is already close to NCCL's plain ring, so NVLS is most of the remaining gap.
 
 <h3> 5.3 Small-message times barely improve </h3>
 
@@ -598,32 +610,20 @@ At 4 KB, there's very little transfer time to save. Here are the same kernels wi
 | direct read, external coordination | 16 µs | 13 µs | 18 µs |
 | NCCL | 34 µs | 27 µs | 38 µs |
 
-Advertised link bandwidth triples from A100 to B200, but the 4 KB times barely change. At this size the transfer itself takes nanoseconds, so the time goes to launching kernels and synchronising GPUs, and a faster link doesn't help with either. The B200 logs show NCCL using a single-channel LL ring here.
+Advertised link bandwidth triples from A100 to B200, but the 4 KB times barely change. At this size there's almost nothing to transfer, so the time goes to launching kernels and synchronising GPUs, and a faster link doesn't help with either. The B200 logs show NCCL using a single-channel LL ring here.
 
 A faster link also makes direct read's extra bytes cheaper, so the model says direct read should stay ahead up to larger sizes. I kept the A100's 8 MB threshold, and the result is mixed. On the B200 the dispatch stays ahead of NCCL through 1 MB, while on the H100 NCCL takes over from 1 MB.
 
-<details markdown="1">
-<summary>H100/B200 curves and NCCL algorithm checks</summary>
+The curves below combine the original 24-block results below 16 MB with the tuned full-grid results from 16 MB onward. All use one host process. The graph shows algorithm bandwidth in GB/s, so we can compare the two GPU types directly.
 
-<figure class="ar-fig" data-fig="chart" data-chart="h100" data-mode="rel">
-  <div class="ar-head"><div class="ar-title">Eight H100s, one process, 24 x 512</div></div>
-  <figcaption>The two NCCL curves separate above 16 MB, where NCCL switches to in-switch reduction.</figcaption>
+<figure class="ar-fig" data-fig="chart" data-chart="newerfinal" data-mode="bw">
+  <div class="ar-head"><div class="ar-title">H100 and B200: fused rings against NCCL</div></div>
+  <figcaption>Eight GPUs, one host process. Both use 24 × 512 below 16 MB; from 16 MB, H100 uses 132 × 512 and B200 uses 148 × 512. Solid lines show our fused rings; dashed lines show default NCCL on each GPU type. The tuned sweeps and NCCL algorithm checks were measured separately.</figcaption>
 </figure>
-
-I didn't capture debug output for this sweep's NCCL 2.30.7 build. A probe with 2.20.5 on the same machine type reports NVLS support. In the sweep, default NCCL matches forced NVLS within 0.1% at bulk, and disabling NVLS matches forced Ring.
-
-<figure class="ar-fig" data-fig="chart" data-chart="b200" data-mode="rel">
-  <div class="ar-head"><div class="ar-title">Eight B200s, one process, 24 x 512</div></div>
-  <figcaption>At 24 x 512 the fused ring falls to a third of NCCL's speed at 1 GB. In-switch reduction only adds a few percent for NCCL.</figcaption>
-</figure>
-
-The B200 sweep's debug output shows a single-channel LL ring at 4 KB and NVLS with Simple on 24 channels at 256 MB, with both one process and one process per GPU. The ring itself is set up with 32 channels. At 1 GB, NCCL is 3.1x faster than the 24 x 512 fused ring on B200.
-
-</details>
 
 <h2> 6. Summary </h2>
 
-On the A100s, we got close to NCCL's large-message bandwidth by keeping enough loads in flight and moving the ring into one kernel per GPU. The B200 needed more blocks and loads to do the same, and on the H100 most of NCCL's lead came from reducing inside the switch. Here's where the experiments ended up:
+On the A100s, we matched or beat NCCL's large-message bandwidth by keeping enough loads in flight and moving the ring into one kernel per GPU. The B200 needed more blocks and loads to get close, and on the H100 most of NCCL's lead came from reducing inside the switch. Here's where the experiments ended up:
 
 | Technique | Result | Limit of the comparison |
 |---|---|---|
@@ -635,7 +635,6 @@ On the A100s, we got close to NCCL's large-message bandwidth by keeping enough l
 
 <figure class="ar-fig" data-fig="bars">
   <div class="ar-head"><div class="ar-title">Algorithm bandwidth at 256 MB per GPU, GB/s</div></div>
-  <figcaption>Each panel has its own scale. The H100 and B200 fused bars use the larger grids from section 5.1.</figcaption>
 </figure>
 
 On a new VM, I'd first check peer access, one transfer, two concurrent transfers, the same with a third GPU involved, and NCCL's selected transport. On the PCIe machines, the link speed on the spec sheet told me very little.
