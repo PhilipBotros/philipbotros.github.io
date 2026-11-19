@@ -44,7 +44,7 @@
       { name: 'fused (LL at small sizes)', color: C.fused, v: [81.5, 83.1, 91.5, 267.7, 2131.0, 8196.9] },
       { name: 'NCCL', color: C.nccl, v: [103.7, 112.5, 128.2, 321.1, 2329.3, 8383.6] }] },
     mp: { sizes: S10, series: [
-      { name: 'direct read', color: C.direct, v: [15.8, 17.1, 18.9, 27.7, 59.3, 156.5, 558.4, 2162.5, 8581.8, 34170.5] },
+      { name: 'one-shot', color: C.direct, v: [15.8, 17.1, 18.9, 27.7, 59.3, 156.5, 558.4, 2162.5, 8581.8, 34170.5] },
       { name: 'fused ring (LL at small sizes)', color: C.fused, v: [42.2, 44.7, 45.2, 45.8, 56.7, 107.0, 228.8, 588.1, 2092.0, 8158.0] },
       { name: 'NCCL', color: C.nccl, v: [34.5, 38.0, 41.6, 41.9, 51.5, 103.4, 239.0, 630.6, 2271.8, 8291.2] },
       { name: 'NCCL, one process', color: C.nccl, dash: true, v: [103.7, 108.5, 112.5, 113.2, 128.2, 184.5, 321.1, 719.1, 2329.3, 8383.6] }] },
@@ -54,7 +54,7 @@
       { name: 'NCCL', color: C.nccl, v: [76.0, 77.0, 82.0, 83.2, 88.9, 110.8, 181.8, 381.4, 1155.4, 4071.4] },
       { name: 'NCCL, in-switch reduction off', color: C.nccl, dash: true, v: [77.1, 79.4, 81.7, 84.7, 89.5, 114.6, 182.9, 422.0, 1408.1, 5292.0] }] },
     h100mp: { sizes: S10, series: [
-      { name: 'direct read', color: C.direct, v: [13.1, 13.4, 14.3, 18.9, 40.2, 108.3, 381.6, 1485.9, 5900.2, 23600.0] },
+      { name: 'one-shot', color: C.direct, v: [13.1, 13.4, 14.3, 18.9, 40.2, 108.3, 381.6, 1485.9, 5900.2, 23600.0] },
       { name: 'fused ring (LL at small sizes)', color: C.fused, v: [42.3, 45.0, 47.5, 49.6, 66.3, 105.1, 173.3, 415.3, 1476.2, 5660.2] },
       { name: 'NCCL', color: C.nccl, v: [27.2, 28.1, 29.5, 29.6, 35.4, 62.4, 134.2, 334.8, 1113.9, 4018.8] },
       { name: 'NCCL, in-switch reduction off', color: C.nccl, dash: true, v: [27.6, 27.6, 29.3, 30.2, 35.9, 59.0, 129.9, 375.5, 1363.3, 5226.7] }] },
@@ -64,7 +64,7 @@
       { name: 'NCCL', color: C.nccl, v: [99.1, 95.5, 106.8, 96.5, 101.9, 122.9, 172.8, 350.7, 793.0, 2687.3] },
       { name: 'NCCL, in-switch reduction off', color: C.nccl, dash: true, v: [95.5, 101.0, 99.4, 95.0, 107.9, 118.8, 150.6, 332.9, 821.1, 2908.7] }] },
     b200mp: { sizes: S10, series: [
-      { name: 'direct read', color: C.direct, v: [17.9, 19.4, 20.4, 22.6, 33.2, 66.6, 203.3, 746.5, 2902.5, 11568.5] },
+      { name: 'one-shot', color: C.direct, v: [17.9, 19.4, 20.4, 22.6, 33.2, 66.6, 203.3, 746.5, 2902.5, 11568.5] },
       { name: 'fused ring (LL at small sizes)', color: C.fused, v: [44.3, 45.3, 46.7, 48.1, 52.9, 76.7, 298.2, 644.6, 2090.2, 8206.0] },
       { name: 'NCCL', color: C.nccl, v: [38.1, 39.0, 41.6, 41.1, 42.4, 67.2, 113.2, 295.1, 734.8, 2630.5] },
       { name: 'NCCL, in-switch reduction off', color: C.nccl, dash: true, v: [37.5, 38.7, 39.9, 41.2, 43.2, 56.0, 92.5, 266.5, 754.0, 2847.1] }] },
@@ -457,7 +457,7 @@
     tP.innerHTML = [2, 4, 8].map(p => '<button type="button" data-p="' + p + '">' + p + ' GPUs</button>').join('');
     tL.innerHTML = Object.keys(LINKS).map(k => '<button type="button" data-l="' + k + '">' + LINKS[k].name + '</button>').join('');
     const legend = html('div', 'ar-legend');
-    legend.innerHTML = '<span><i style="background:var(--ar-ring)"></i>ring</span><span><i style="background:var(--ar-direct)"></i>direct read</span>';
+    legend.innerHTML = '<span><i style="background:var(--ar-ring)"></i>ring</span><span><i style="background:var(--ar-direct)"></i>one-shot</span>';
     const plot = html('div'), tip = html('div', 'ar-tip'), text = html('div', 'ar-step');
     insertBeforeCaption(fig, legend); insertBeforeCaption(fig, plot); insertBeforeCaption(fig, text); fig.appendChild(tip);
     const sizes = []; for (let e = 12; e <= 30.001; e += 0.375) sizes.push(Math.pow(2, e));
@@ -468,8 +468,8 @@
       const ring = sizes.map(S => 2 * (P - 1) * a + 2 * (P - 1) / P * S / (B * 1e3));
       const direct = sizes.map(S => a + (P - 1) * S / (B * 1e3));
       const ch = { sizes, ticks: S10, noDots: true, series: [
-        { name: 'ring', color: C.ring, v: ring }, { name: 'direct read', color: C.direct, v: direct }] };
-      const r = renderChart(fig, plot, tip, ch, 'lat', W, 'Modelled all-reduce time against message size, ring and direct read');
+        { name: 'ring', color: C.ring, v: ring }, { name: 'one-shot', color: C.direct, v: direct }] };
+      const r = renderChart(fig, plot, tip, ch, 'lat', W, 'Modelled all-reduce time against message size, ring and one-shot');
       const svg = r.svg, top = r.T, bot = r.H - r.B;
       const note = (x, y, s, anchor, color) => {
         const t = el('text', { x, y, 'text-anchor': anchor, 'font-size': 12, fill: color || 'var(--ar-ink2)', stroke: '#fff', 'stroke-width': 4, 'paint-order': 'stroke', 'pointer-events': 'none' }, svg);
@@ -480,14 +480,14 @@
       note(xd, bot - 16, 'DDP bucket, 25 MiB', 'middle');
       let msg;
       if (P === 2) {
-        msg = '<b>Two GPUs:</b> both algorithms move $S$ bytes per GPU, so the ring’s extra step never pays for itself and direct read is ahead at every size.';
+        msg = '<b>Two GPUs:</b> both algorithms move $S$ bytes per GPU, so the ring’s extra step never pays for itself and one-shot is ahead at every size.';
       } else {
         const Sx = a * (2 * P - 3) * P * B * 1e3 / ((P - 1) * (P - 2));
         const x = r.X(Sx);
         el('line', { x1: x, x2: x, y1: top, y2: bot, stroke: '#999', 'stroke-dasharray': '4 4', 'pointer-events': 'none' }, svg);
-        note(x - 8, top + 14, '← direct faster', 'end', C.direct);
+        note(x - 8, top + 14, '← one-shot faster', 'end', C.direct);
         note(x + 8, top + 14, 'ring faster →', 'start', C.ring);
-        msg = '<b>Crossover at about ' + fmtS(Sx) + '.</b> Below it the ring’s ' + 2 * (P - 1) + ' steps cost more than direct read’s extra bytes. Above it direct read moves ' +
+        msg = '<b>Crossover at about ' + fmtS(Sx) + '.</b> Below it the ring’s ' + 2 * (P - 1) + ' steps cost more than one-shot’s extra bytes. Above it one-shot moves ' +
           ((P - 1) / (2 * (P - 1) / P)).toFixed(1) + 'x the ring’s traffic and falls behind.';
       }
       text.innerHTML = msg.replace('$S$', '<i>S</i>') + ' <span style="color:var(--ar-muted)">Parameters: α = ' + a + ' µs per step, B = ' + B + ' GB/s.</span>';
@@ -559,13 +559,13 @@
     });
   }
 
-  // ---------------------------------------------------------------- direct read: every GPU reads all inputs and sums them itself
+  // ---------------------------------------------------------------- one-shot: every GPU reads all inputs and sums them itself
   function mountDirect(fig) {
     const P = 4, GC = ['#376789', '#ad6245', '#567b65', '#817194'];
     const wrap = html('div'), text = html('div', 'ar-step');
     insertBeforeCaption(fig, wrap); insertBeforeCaption(fig, text);
     let sel = 0, cols = [], reads = [];
-    const describe = () => '<b>GPU ' + sel + '</b> reads the other three inputs over NVLink (coloured) and its own locally (grey), ' +
+    const describe = () => '<b>GPU ' + sel + '</b> reads the other three inputs from its peers (coloured) and its own locally (grey), ' +
       'and writes the sum to its own output. All four GPUs do this at the same time, in a single step, each reading 3 × S bytes from the other GPUs.';
     const paint = () => {
       reads.forEach((r, s) => r.setAttribute('display', s === sel ? 'inline' : 'none'));
@@ -576,7 +576,7 @@
       const narrow = W < 560, M = 4, gap = narrow ? 12 : 28;
       const bw = (W - 2 * M - (P - 1) * gap) / P, pad = narrow ? 6 : 12;
       const inY = 30, cellH = 30, outY = 150, H = outY + cellH + 14;
-      const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Direct read: each GPU reads every input and sums them into its own output' });
+      const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'One-shot: each GPU reads every input and sums them into its own output' });
       const defs = el('defs', {}, svg);
       [...GC, '#999'].forEach((c, k) => {
         const mk = el('marker', { id: 'ar-dr' + k, viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 6, markerHeight: 6, orient: 'auto' }, defs);
@@ -793,11 +793,11 @@
     const P = 8, STEPS = 2 * (P - 1);
     const STAGES = {
       host: { name: 'Host-driven ring', color: C.ring, total: 1149,
-        text: '<b>Host-driven ring.</b> One CPU thread issues all 112 copies, 14 per GPU, at about 10 µs each. Each GPU waits for its next copy to be issued. 1149 µs at 4 KB.' },
+        text: '<b>Host-driven ring.</b> One CPU thread issues 112 copies across the eight GPUs, plus additions and events. Step durations in this diagram are illustrative. Each GPU waits for its next copy to be issued. 1149 µs at 4 KB.' },
       fused: { name: 'Fused kernel', color: C.fused, total: 260.5,
         text: '<b>Fused kernel.</b> The host launches one kernel per GPU, and each kernel runs all 14 steps itself. Between steps, a GPU waits for its neighbour’s flag. 260.5 µs at 4 KB (the per-thread-fence tuning run).' },
-      direct: { name: 'Direct read', color: C.direct, total: 45,
-        text: '<b>Direct read.</b> One launch per GPU and one step: each kernel reads every other GPU’s input and sums. Four times the ring’s bytes, but no rounds between GPUs. Measured: 45 µs at 4 KB, with a single host process. The barrier that makes the inputs safe to read is outside the timing.' },
+      direct: { name: 'One-shot', color: C.direct, total: 45,
+        text: '<b>One-shot.</b> One launch per GPU and one step: each kernel reads every other GPU’s input and sums. Four times the ring’s bytes, but no rounds between GPUs. Measured: 45 µs at 4 KB, with a single host process. The barrier that makes the inputs safe to read is outside the timing.' },
     };
     // data-stages="host,fused" limits the figure to those stages; default shows all.
     if (fig.dataset.stages) { const keep = fig.dataset.stages.split(','); Object.keys(STAGES).forEach(k => { if (!keep.includes(k)) delete STAGES[k]; }); }
@@ -812,7 +812,7 @@
           block(0, k * ti, (k + 1) * ti, 'issue', 'host issues copy ' + (k + 1) + ' of ' + P * STEPS + ' (GPU ' + r + ', step ' + (st + 1) + ')');
           const t0 = Math.max((k + 1) * ti, st ? Math.max(end[r][st - 1], end[src][st - 1]) : 0);
           end[r][st] = t0 + tw;
-          block(1 + r, t0, t0 + tw, 'step', 'GPU ' + r + ', step ' + (st + 1) + ': copy a chunk from GPU ' + src + ', then add');
+          block(1 + r, t0, t0 + tw, 'step', 'GPU ' + r + ', step ' + (st + 1) + ': copy a chunk from GPU ' + src + (st < P - 1 ? ', then add' : ''));
         }
       } else {
         const tl = 5;
@@ -823,7 +823,7 @@
             const src = (r + P - 1) % P;
             const t0 = Math.max(st ? end[r][st - 1] : (r + 1) * tl, st ? end[src][st - 1] : 0);
             end[r][st] = t0 + ts;
-            block(1 + r, t0, t0 + ts, 'step', 'GPU ' + r + ', step ' + (st + 1) + ': read a chunk from GPU ' + src + ', add, publish a flag');
+            block(1 + r, t0, t0 + ts, 'step', 'GPU ' + r + ', step ' + (st + 1) + ': read a chunk from GPU ' + src + (st < P - 1 ? ', add' : '') + ', publish a flag');
           }
         } else {
           for (let r = 0; r < P; r++) block(1 + r, (r + 1) * tl, (r + 1) * tl + 8, 'step', 'GPU ' + r + ': read all ' + (P - 1) + ' other inputs and sum');
@@ -986,7 +986,95 @@
     facts.innerHTML = M.facts.map(([k, v]) => '<dt>' + k + '</dt><dd>' + v + '</dd>').join('');
   }
 
-  const MOUNT = { chart: mountChart, bars: mountBars, topology: mountTopology, ring: mountRing, model: mountModel, protocols: mountProtocols, allreduce: mountAllReduce, direct: mountDirect, movers: mountMovers, moverlimit: mountMoverLimit, machine: mountMachine, timeline: mountTimeline };
+  // ---------------------------------------------------------------- bandwidth against block count (linear axes)
+  // Fused ring at 256 MB on eight GPUs, algorithm bandwidth in GB/s.
+  // From results/cuda_ring_8xB200_sweep2 and results/cuda_ring_8xH100_sweep.
+  const SWEEP = {
+    xmax: 148, ymax: 350, ticks: [24, 32, 48, 96, 148],
+    series: [
+      { name: 'B200, 4 loads per thread', color: C.ring, x: [24, 32, 48, 96, 148], v: [159, 211, 273, 314, 317] },
+      { name: 'B200, 8 loads', color: C.fused, x: [24, 32, 48, 96, 148], v: [209, 263, 280, 316, 315] },
+      { name: 'B200, 16 loads', color: C.direct, x: [24, 32, 48, 96, 148], v: [240, 314, 297, 291, 302] },
+      { name: 'H100, 8 loads', color: C.rr, x: [24, 32, 48, 96, 132], v: [181, 181, 183, 186, 185] }],
+    marks: [ // NCCL's ring with in-switch reduction off, at its own channel count
+      { name: 'NCCL, NVLS off on B200, 32 channels', x: 32, v: 327 },
+      { name: 'NCCL, NVLS off on H100, 24 channels', x: 24, v: 190 }],
+  };
+  function mountSweep(fig) {
+    const ch = SWEEP;
+    const legend = html('div', 'ar-legend');
+    for (const s of ch.series) {
+      const sp = html('span', '', legend);
+      html('i', '', sp).style.background = s.color;
+      html('span', '', sp, s.name).style.color = 'var(--ar-ink2)';
+    }
+    const ms = html('span', '', legend), mi = html('i', '', ms);
+    mi.style.cssText = 'width:8px;height:8px;transform:rotate(45deg);background:' + C.nccl;
+    html('span', '', ms, 'NCCL ring, in-switch reduction off').style.color = 'var(--ar-ink2)';
+    const plot = html('div'), tip = html('div', 'ar-tip');
+    insertBeforeCaption(fig, legend); insertBeforeCaption(fig, plot); fig.appendChild(tip);
+    const xs = [...new Set(ch.series.flatMap(s => s.x))].sort((a, b) => a - b);
+    let lastW = 0;
+    function draw() {
+      const W = Math.max(300, Math.round(plot.clientWidth || 800));
+      if (W === lastW) return;
+      lastW = W;
+      const narrow = W < 600, H = narrow ? 300 : 360, L = narrow ? 40 : 64, R = narrow ? 10 : 16, T = 14, B = 44;
+      const X = x => L + x / ch.xmax * (W - L - R), Y = y => T + (1 - y / ch.ymax) * (H - T - B);
+      const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': fig.querySelector('.ar-title').textContent + ', algorithm bandwidth against the number of thread blocks' });
+      const grid = el('g', { class: 'grid' }, svg), axis = el('g', { class: 'axis' }, svg);
+      el('path', { d: `M${L},${T} V${H - B} H${W - R}`, fill: 'none' }, axis);
+      for (let y = 0; y <= ch.ymax; y += 100) {
+        if (y) el('line', { x1: L, x2: W - R, y1: Y(y), y2: Y(y) }, grid);
+        el('text', { x: L - 8, y: Y(y) + 4, 'text-anchor': 'end' }, axis).textContent = String(y);
+      }
+      for (const t of ch.ticks) {
+        el('line', { x1: X(t), x2: X(t), y1: H - B, y2: H - B + 4 }, axis);
+        if (narrow && t === 32) continue; // 24 and 32 collide on a phone
+        el('text', { x: X(t), y: H - B + 18, 'text-anchor': 'middle' }, axis).textContent = String(t);
+      }
+      el('text', { x: L + (W - L - R) / 2, y: H - 4, 'text-anchor': 'middle' }, axis).textContent = 'blocks of 512 threads';
+      if (!narrow) el('text', { transform: `translate(12,${T + (H - T - B) / 2}) rotate(-90)`, 'text-anchor': 'middle' }, axis).textContent = 'algorithm bandwidth (GB/s)';
+      else el('text', { x: L - 8, y: T - 2, 'text-anchor': 'end' }, axis).textContent = 'GB/s';
+      for (const s of ch.series) {
+        const d = s.v.map((v, i) => (i ? 'L' : 'M') + X(s.x[i]).toFixed(1) + ',' + Y(v).toFixed(1)).join(' ');
+        el('path', { d, fill: 'none', stroke: s.color, 'stroke-width': 1.8, 'stroke-linejoin': 'round' }, svg);
+        s.v.forEach((v, i) => el('circle', { cx: X(s.x[i]), cy: Y(v), r: 2.7, fill: '#fff', stroke: s.color, 'stroke-width': 1.4 }, svg));
+      }
+      for (const m of ch.marks) {
+        const cx = X(m.x), cy = Y(m.v);
+        el('path', { d: `M${cx},${cy - 5} L${cx + 5},${cy} L${cx},${cy + 5} L${cx - 5},${cy} Z`, fill: C.nccl }, svg);
+        el('text', { x: cx - 9, y: cy + 4, 'text-anchor': 'end', 'font-size': 12, fill: C.nccl }, svg).textContent = 'NCCL';
+      }
+      const xh = el('line', { y1: T, y2: H - B, stroke: '#999', 'stroke-dasharray': '3 3', style: 'display:none' }, svg);
+      const hit = el('rect', { x: L, y: T, width: W - L - R, height: H - T - B, fill: 'transparent' }, svg);
+      plot.replaceChildren(svg);
+      const row = (c, name, v) => '<div><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:' + c + ';margin-right:6px"></span>' + name + ': <b>' + v + ' GB/s</b></div>';
+      const move = ev => {
+        const rc = svg.getBoundingClientRect(), px = (ev.clientX - rc.left) / rc.width * W;
+        const x = xs.reduce((a, b) => Math.abs(X(b) - px) < Math.abs(X(a) - px) ? b : a);
+        xh.setAttribute('x1', X(x)); xh.setAttribute('x2', X(x)); xh.style.display = '';
+        tip.innerHTML = '<div style="margin-bottom:3px"><b>' + x + ' blocks</b></div>'
+          + ch.series.filter(s => s.x.includes(x)).map(s => row(s.color, s.name, s.v[s.x.indexOf(x)])).join('')
+          + ch.marks.filter(m => m.x === x).map(m => row(C.nccl, m.name, m.v)).join('');
+        tip.style.display = 'block';
+        const fr = fig.getBoundingClientRect();
+        let tx = ev.clientX - fr.left + 14;
+        if (tx + tip.offsetWidth > fr.width - 8) tx = ev.clientX - fr.left - tip.offsetWidth - 14;
+        tip.style.left = Math.max(4, tx) + 'px'; tip.style.top = (ev.clientY - fr.top + 12) + 'px';
+      };
+      const hide = () => { tip.style.display = 'none'; xh.style.display = 'none'; };
+      hit.addEventListener('mousemove', move);
+      hit.addEventListener('mouseleave', hide);
+      hit.addEventListener('touchstart', e => move(e.touches[0]), { passive: true });
+      hit.addEventListener('touchmove', e => move(e.touches[0]), { passive: true });
+      hit.addEventListener('touchend', hide);
+    }
+    draw();
+    if (window.ResizeObserver) new ResizeObserver(draw).observe(plot);
+  }
+
+  const MOUNT = { sweep: mountSweep, chart: mountChart, bars: mountBars, topology: mountTopology, ring: mountRing, model: mountModel, protocols: mountProtocols, allreduce: mountAllReduce, direct: mountDirect, movers: mountMovers, moverlimit: mountMoverLimit, machine: mountMachine, timeline: mountTimeline };
   function init() { document.querySelectorAll('figure.ar-fig[data-fig]').forEach(f => { const m = MOUNT[f.dataset.fig]; if (m) m(f); }); }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 })();
