@@ -67,11 +67,13 @@ This model ignores copy engines, compiler scheduling, and protocol metadata, so 
 
 Throughout the post we'll track two sizes from each sweep: **4 KB**, where launch and synchronization latency dominate, and **256 MB**, where bulk transfer throughput dominates.
 
-Following `nccl-tests`, I report **algorithm bandwidth** $S/T$ in GB/s, using power-of-two buffer sizes. For an eight-GPU ring, multiplying algorithm bandwidth by $1.75$ gives the nominal payload traffic on the link (what `nccl-tests` calls bus bandwidth, excluding protocol metadata). On an A100 with 300 GB/s of unidirectional NVLink bandwidth per GPU, an eight-GPU ring tops out at $300 / 1.75 \approx 171\text{ GB/s}$ of algorithm bandwidth.
+Following [`nccl-tests`](https://github.com/NVIDIA/nccl-tests/blob/master/doc/PERFORMANCE.md), I report **algorithm bandwidth** $S/T$ in GB/s, using power-of-two buffer sizes. For an eight-GPU ring, multiplying algorithm bandwidth by $1.75$ gives the nominal payload traffic on the link (what `nccl-tests` calls bus bandwidth, excluding protocol metadata). On an A100 with 300 GB/s of unidirectional NVLink bandwidth per GPU, an eight-GPU ring tops out at $300 / 1.75 \approx 171\text{ GB/s}$ of algorithm bandwidth.
 
 Timings are medians over 100 iterations (20 for $\ge 64$ MB), using the same harness for each kernel and its NCCL baseline.
 
 ## 2. Copy paths and a detour through PCIe
+
+Before building a full ring on NVLink, there are two mechanics choices to sort out first: how one GPU reads another's memory, and what the host's PCIe topology actually lets through.
 
 ### Copy engines vs. direct peer loads
 
@@ -284,7 +286,7 @@ Adding LL dropped 4 KB latency from 261 µs down to **82 µs**, beating NCCL's *
 
 I wanted to time the same submission pattern used in a typical multi-GPU training job. With one worker per GPU, each process can submit its own kernels. My single-process harness submitted to the eight devices in turn, grouped the NCCL calls, and synchronized each stream.
 
-I wrote a second [multiprocess harness](https://github.com/PhilipBotros/nccl-allreduce/blob/739caf70d2fa24aa32ad9df76ab7e09f1a4f5ca2/cuda/ring_mp.cu) that `fork`s eight worker processes before CUDA init, exchanges peer buffers with `cudaIpcGetMemHandle` / `cudaIpcOpenMemHandle`, aligns ranks on a host barrier, and gives each rank its own `ncclCommInitRank`:
+I wrote a second multiprocess harness that `fork`s eight worker processes before CUDA init, exchanges peer buffers with `cudaIpcGetMemHandle` / `cudaIpcOpenMemHandle`, aligns ranks on a host barrier, and gives each rank its own `ncclCommInitRank`:
 
 | Eight A100s, 4 KB | Single host process | One process per GPU |
 |---|---:|---:|
@@ -297,17 +299,9 @@ Note that this also changes how to read the Kernel 4 result. Part of the drop fr
 
 ### Kernel 6: one-shot all-reduce for small messages
 
-With clean per-rank launches, we're looking at 42 µs for the 14-step ring vs. 34 µs for NCCL. Let's plug $P = 8$ and $S = 4\text{ KB}$ back into the $\alpha$-$\beta$ model comparing the ring against one-shot:
+Paying 13 extra ring hops at 4 KB just to avoid reading an extra 21 KB makes no sense, so for small buffers ($(P - 1)S \le 8\text{ MB}$) we drop the ring completely and launch a one-shot kernel that reads `float4`s directly from every peer.
 
-$$T_{\text{ring}} - T_{\text{one-shot}} \approx 13\alpha - \frac{5.25S}{B}.$$
-
-For $S = 4\text{ KB}$, the extra read volume $5.25S$ is only 21 KB. At 300 GB/s, 21 KB takes less than $0.1\text{ µs}$ on the wire. Paying 13 extra serial hops to save $0.1\text{ µs}$ of bandwidth is a bad trade.
-
-So for small messages where total remote reads per GPU satisfy $(P - 1)S \le 8\text{ MB}$, we skip the ring and launch a single-step one-shot kernel: each GPU reads `float4` vectors directly from all seven peers and sums them locally. Above 8 MB of remote reads, we call the fused ring.
-
-At 4 KB on eight A100s, one-shot finishes in **16 µs** against NCCL's **34 µs**. Keep an important caveat in mind here: our benchmark ensures all ranks' input buffers are already written before the timer starts and keeps them untouched until everyone finishes, whereas `ncclAllReduce` synchronizes peer buffer readiness internally on every call. Turning this one-shot kernel into a safe drop-in replacement still requires coordinating both input readiness and safe buffer reuse.
-
-In the 1–4 MB crossover range, NCCL still leads by 3–15% on four and eight GPUs. Jumping straight from 1-step one-shot to a 14-step ring leaves a gap in the middle where NCCL has other options, including trees ($2\log_2 P = 6$ steps on eight GPUs) or its `LL128` protocol.
+That cuts 4 KB latency on eight A100s from 42 µs to 16 µs vs. NCCL's 34 µs, with the caveat that the benchmark already has all peer inputs ready at launch, whereas `ncclAllReduce` pays to synchronize readiness on every call. In the 1–4 MB range before switching back to the ring, NCCL still leads by 3–15%.
 
 <figure class="ar-fig" data-fig="chart" data-chart="mp" data-mode="lat">
   <div class="ar-head"><div class="ar-title">Eight A100s: one process per GPU</div></div>
@@ -349,7 +343,7 @@ On B200, NVLink is 3x faster than on A100 (900 GB/s vs. 300 GB/s). Yet running o
 
 ### Kernel 7: an accidental 27% from `ptxas`
 
-To sweep the unroll factor as a template parameter `U`, I replaced the four hardcoded variables (`b0`, `b1`, `b2`, `b3`) with `float4 b[U]` and a `#pragma unroll` loop ([kernel source](https://github.com/PhilipBotros/nccl-allreduce/blob/739caf70d2fa24aa32ad9df76ab7e09f1a4f5ca2/cuda/ring_fused.cuh)). When I re-ran the `U = 4`, `24 × 512` baseline at 256 MB on B200 as a sanity check, bandwidth jumped from **126 GB/s to 160 GB/s** (+27%), and a back-to-back A/B run reproduced the gap.
+To sweep the unroll factor as a template parameter `U`, I replaced the four hardcoded variables (`b0`, `b1`, `b2`, `b3`) with `float4 b[U]` and a `#pragma unroll` loop. When I re-ran the `U = 4`, `24 × 512` baseline at 256 MB on B200 as a sanity check, bandwidth jumped from **126 GB/s to 160 GB/s** (+27%), and a back-to-back A/B run reproduced the gap.
 
 I dumped the SASS (the GPU's machine code) for both kernels with `cuobjdump --dump-sass` to see what had changed. In the named-variable version, `ptxas` emitted three remote NVLink loads (`LDG.E.128.STRONG.GPU`), then scheduled `FADD`s using the first two loads *before* issuing the fourth remote load. The warp ends up stalling on those first NVLink round-trips before the fourth load even gets sent. With `float4 b[U]` and `#pragma unroll`, `ptxas` emits all four remote loads up front before the first `FADD`.
 
@@ -388,7 +382,7 @@ Address arithmetic is omitted. `STRONG.GPU` marks the remote loads:
 
 ### Kernel 8: sweeping block count and unroll depth on B200
 
-With the array version, I swept block counts and remote `float4` loads per thread (`U = 4, 8, 16`) at 512 threads/block on B200 ([sweep results](https://github.com/PhilipBotros/nccl-allreduce/tree/739caf70d2fa24aa32ad9df76ab7e09f1a4f5ca2/results/cuda_ring_8xB200_sweep2)):
+With the array version, I swept block counts and remote `float4` loads per thread (`U = 4, 8, 16`) at 512 threads/block on B200:
 
 | B200 fused ring, 256 MB | 4 loads/thread | 8 loads/thread | 16 loads/thread |
 |---|---:|---:|---:|
@@ -417,7 +411,7 @@ Even after the sweep, H100 topped out at **186 GB/s** while default NCCL hit **2
 
 On the Hopper and Blackwell nodes in these runs, NCCL defaulted to [NVLink SHARP (NVLS)](https://arxiv.org/abs/2507.04786) for large buffers. Instead of forwarding chunks around a GPU-to-GPU ring, kernels issue `multimem.ld_reduce` and `multimem.st` instructions against multicast addresses, and the NVSwitch ASICs perform the reduction inside the switch fabric and broadcast the result. That drops per-GPU link traffic on eight GPUs from $1.75S$ (ring) down to roughly $1S$. Because our kernel reads peer HBM directly and adds on SMs, it always pays the $1.75S$ ring factor.
 
-Forcing NCCL onto its ring algorithm (`NCCL_ALGO=Ring`) made the algorithmic comparison direct (logs for [H100](https://github.com/PhilipBotros/nccl-allreduce/blob/739caf70d2fa24aa32ad9df76ab7e09f1a4f5ca2/results/cuda_ring_8xH100_run2/nccl_algo_ring_p8.csv) and [B200](https://github.com/PhilipBotros/nccl-allreduce/blob/739caf70d2fa24aa32ad9df76ab7e09f1a4f5ca2/results/cuda_ring_8xB200/nccl_algo_ring_p8.csv)). Without NVLS, NCCL's H100 throughput dropped from 232 GB/s to **190 GB/s**, right next to my ring's 186 GB/s. On B200, `NCCL_ALGO=Ring` ran at **324 GB/s** against my ring’s 317 GB/s. Disabling NVLS separately (`NCCL_NVLS_ENABLE=0`) gave 327 GB/s. On H100, forcing Ring closed 42 GB/s of the 46 GB/s gap.
+Forcing NCCL onto its ring algorithm (`NCCL_ALGO=Ring`) made the algorithmic comparison direct. Without NVLS, NCCL's H100 throughput dropped from 232 GB/s to **190 GB/s**, right next to my ring's 186 GB/s. On B200, `NCCL_ALGO=Ring` ran at **324 GB/s** against my ring’s 317 GB/s. Disabling NVLS separately (`NCCL_NVLS_ENABLE=0`) gave 327 GB/s. On H100, forcing Ring closed 42 GB/s of the 46 GB/s gap.
 
 Pushing buffer size to 1 GB, the tuned rings reach **131 GB/s** (A100), **192 GB/s** (H100), and **367 GB/s** (B200, 148 blocks and four loads per thread). Multiplying by 1.75 gives 229, 336, and 643 GB/s of nominal NVLink payload throughput, or 76%, 75%, and 71% of rated unidirectional NVLink bandwidth across all three generations.
 
@@ -448,8 +442,7 @@ There's obviously more you'd need to make any of this useful inside a training l
 - [Code and benchmark sweeps for this post](https://github.com/PhilipBotros/nccl-allreduce)
 - [Demystifying NCCL: An In-depth Analysis of GPU Communication Protocols and Algorithms](https://arxiv.org/abs/2507.04786)
 - [Inside TPU and GPU Clusters: The Anatomy of Collective Communication](https://www.aleksagordic.com/blog/collective-operations), Aleksa Gordić
-- [One Kernel for All Your GPUs](https://hazyresearch.stanford.edu/blog/2025-09-22-pgl) and [Loads and Loads of Fluffy Kittens](https://hazyresearch.stanford.edu/blog/2025-11-17-fluffy-kittens), Hazy Research
+- [Loads and Loads of Fluffy Kittens](https://hazyresearch.stanford.edu/blog/2025-11-17-fluffy-kittens), Hazy Research
 - [DeepSeek-V3 Technical Report](https://arxiv.org/abs/2412.19437), section 3.2.2
-- [Fusing Communication and Compute in NCCL 2.28](https://developer.nvidia.com/blog/fusing-communication-and-compute-with-new-device-api-and-copy-engine-collectives-in-nvidia-nccl-2-28/), NVIDIA
 - [How to Scale Your Model (JAX Scaling Book)](https://jax-ml.github.io/scaling-book/)
 - [NCCL source](https://github.com/NVIDIA/nccl) and [nccl-tests bandwidth definitions](https://github.com/NVIDIA/nccl-tests/blob/master/doc/PERFORMANCE.md)
