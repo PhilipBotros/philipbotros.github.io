@@ -1,0 +1,130 @@
+/* Figures for the all-reduce post. Everything is scoped under .ar-fig. */
+.ar-fig {
+  --ar-nccl: #a84a35; --ar-ring: #376789; --ar-fused: #567b65; --ar-direct: #b8922a;
+  --ar-copy: #7d858b; --ar-rr: #817194;
+  --ar-ink: #333; --ar-ink2: #555; --ar-muted: #888; --ar-rule: #e2e2e2; --ar-box: #f0f0f0; --ar-surface: #fff;
+  position: relative;
+  margin: 2em 0;
+  padding: 16px 18px 12px;
+  background: var(--ar-surface);
+  border: 1px solid var(--ar-rule);
+  border-radius: 6px;
+  font-family: Georgia, serif;
+  color: var(--ar-ink);
+}
+.ar-fig svg { display: block; width: 100%; height: auto; overflow: visible; }
+.ar-fig svg text { font-family: Georgia, serif; }
+.ar-fig figcaption { font-size: 0.85em; color: var(--ar-ink2); line-height: 1.45; margin-top: 10px; }
+.ar-fig .ar-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.ar-fig .ar-title { font-weight: bold; font-size: 0.95em; }
+.ar-fig .ar-toggle { display: inline-flex; border: 1px solid var(--ar-rule); border-radius: 5px; overflow: hidden; flex: none; }
+.ar-fig .ar-toggle button, .ar-fig .ar-controls button {
+  font: inherit; font-size: 0.8em; padding: 3px 10px; border: 0; background: var(--ar-surface); color: var(--ar-ink2); cursor: pointer;
+}
+.ar-fig .ar-toggle button + button { border-left: 1px solid var(--ar-rule); }
+.ar-fig .ar-toggle button[aria-pressed="true"] { background: var(--ar-box); color: var(--ar-ink); font-weight: bold; }
+.ar-fig .ar-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 0.8em; color: var(--ar-ink2); margin: 8px 0 4px; }
+.ar-fig .ar-legend span { display: inline-flex; align-items: center; }
+.ar-fig .ar-legend i { width: 18px; height: 3px; margin-right: 6px; display: inline-block; border-radius: 1px; }
+.ar-fig .ar-legend i.dash { background: repeating-linear-gradient(90deg, currentColor 0 5px, transparent 5px 9px) !important; }
+.ar-fig .axis text { font-size: 12px; fill: var(--ar-muted); }
+.ar-fig .axis path, .ar-fig .axis line { stroke: #bbb; }
+.ar-fig .grid line { stroke: var(--ar-rule); stroke-dasharray: 2 4; }
+.ar-fig .ar-tip {
+  position: absolute; pointer-events: none; background: #222; color: #fff; font-size: 12.5px; padding: 7px 10px;
+  border-radius: 5px; line-height: 1.45; white-space: nowrap; display: none; z-index: 5; font-family: Georgia, serif;
+}
+.ar-fig .ar-tools { display: flex; gap: 8px; flex-wrap: wrap; }
+/* bars, one panel per machine */
+.ar-fig .ar-panels { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px 28px; margin-top: 8px; }
+@media (max-width: 640px) { .ar-fig .ar-panels { grid-template-columns: 1fr; } }
+.ar-fig .ar-panel h5 { margin: 0 0 6px; font-size: 0.82em; font-weight: bold; color: var(--ar-ink2); }
+.ar-fig .ar-bar { display: grid; grid-template-columns: 6.5em 1fr; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 0.8em; }
+.ar-fig .ar-bar .lab { color: var(--ar-ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ar-fig .ar-bar .track { height: 18px; position: relative; }
+.ar-fig .ar-bar .fill { height: 100%; border-radius: 0 3px 3px 0; min-width: 2px; }
+.ar-fig .ar-bar .val { position: absolute; left: calc(var(--w) + 6px); top: 0; line-height: 18px; color: var(--ar-ink); }
+.ar-fig .ar-ratio { font-size: 0.78em; color: var(--ar-muted); margin-top: 2px; }
+/* ring animation */
+.ar-fig .ar-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.ar-fig .ar-controls button { border: 1px solid var(--ar-rule); border-radius: 5px; padding: 3px 12px; }
+.ar-fig .ar-controls button:hover, .ar-fig .ar-toggle button:hover { background: var(--ar-box); }
+.ar-fig .ar-step { font-size: 0.85em; color: var(--ar-ink2); min-height: 2.9em; margin-top: 4px; line-height: 1.45; }
+.ar-fig .ar-step b { color: var(--ar-ink); }
+.ar-fig .flow { stroke-dasharray: 6 10; animation: ar-flow 1.2s linear infinite; }
+.ar-fig .flow.slow { animation-duration: 3.6s; }
+@keyframes ar-flow { to { stroke-dashoffset: -32; } }
+@media (prefers-reduced-motion: reduce) { .ar-fig .flow { animation: none; } }
+@media (max-width: 640px) { .ar-fig { padding: 12px 10px 10px; margin: 1.5em 0; } }
+/* copy engine vs SM loads, side by side; stacks on narrow screens */
+.ar-fig .ar-movers { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 22px; margin-top: 10px; }
+.ar-fig .ar-movers .ar-panel + .ar-panel { position: relative; }
+.ar-fig .ar-movers .ar-panel + .ar-panel::before { content: ""; position: absolute; left: -11px; top: 0; bottom: 0; border-left: 1px solid var(--ar-rule); }
+@media (max-width: 640px) {
+  .ar-fig .ar-movers { grid-template-columns: 1fr; }
+  .ar-fig .ar-movers .ar-panel + .ar-panel { border-top: 1px solid var(--ar-rule); padding-top: 14px; }
+  .ar-fig .ar-movers .ar-panel + .ar-panel::before { display: none; }
+}
+.ar-fig .ar-movers .ar-step { min-height: 5.8em; }
+/* The v2 worklog uses open figures, with UI kept subordinate to the drawing. */
+.ar-fig {
+  --ar-muted: #70767b;
+  --ar-rule: #dce0e2;
+  --ar-box: #f3f4f4;
+  margin: 2.5em 0;
+  padding: 16px 0 12px;
+  border: 0;
+  border-top: 1px solid var(--ar-rule);
+  border-radius: 0;
+  background: transparent;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+.ar-fig svg text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.ar-fig .ar-head { margin-bottom: 10px; align-items: baseline; }
+.ar-fig .ar-title { font-size: 0.85em; font-weight: 600; }
+.ar-fig figcaption { margin-top: 12px; font-family: Georgia, serif; font-size: 0.85em; }
+.ar-fig .ar-toggle { border: 0; border-radius: 0; overflow: visible; gap: 12px; }
+.ar-fig .ar-toggle button, .ar-fig .ar-controls button {
+  padding: 3px 0;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  border-radius: 0;
+  font-size: 0.75em;
+}
+.ar-fig .ar-toggle button + button { border-left: 0; }
+.ar-fig .ar-toggle button[aria-pressed="true"] { background: transparent; border-bottom-color: var(--ar-ink); }
+.ar-fig .ar-controls { gap: 20px; }
+.ar-fig .ar-controls button { color: var(--ar-ring); }
+.ar-fig .ar-controls button:disabled { color: #a1a6aa; cursor: default; }
+.ar-fig .ar-toggle button:hover, .ar-fig .ar-controls button:hover { background: transparent; border-bottom-color: var(--ar-rule); }
+.ar-fig button:focus-visible, .ar-fig input:focus-visible { outline: 2px solid var(--ar-ring); outline-offset: 4px; }
+.ar-fig .ar-step { font-size: 0.8em; color: var(--ar-ink2); line-height: 1.55; }
+.ar-fig .ar-step b { font-weight: 600; }
+.ar-fig .ar-legend { margin: 8px 0; font-size: 0.75em; }
+.ar-fig .ar-tip { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; border-radius: 0; }
+.ar-fig .ar-bar .fill { border-radius: 0; }
+.ar-fig .ar-bar .track { height: 12px; }
+.ar-fig .ar-bar .val { line-height: 12px; }
+.ar-fig .flow { animation: none; stroke-dasharray: none; }
+.ar-fig .grid line { stroke: #e9ebec; stroke-dasharray: none; }
+.ar-fig .axis path, .ar-fig .axis line { stroke: #aab0b4; }
+@media (max-width: 640px) {
+  .ar-fig { padding: 12px 0; margin: 2em 0; }
+  .ar-fig .ar-tools { gap: 8px 16px; }
+  .ar-fig .ar-movers { gap: 20px; }
+}
+
+/* Hardware figures stand alone; their annotations belong to the diagram. */
+.ar-fig .ar-machine { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 16px 28px; align-items: center; margin-top: 12px; }
+.ar-fig .ar-machine svg { margin: 0 auto; }
+.ar-fig .ar-facts { margin: 0; font-size: 0.8em; line-height: 1.45; color: var(--ar-ink2); }
+.ar-fig .ar-facts dt { font-weight: 600; color: var(--ar-ink); }
+.ar-fig .ar-facts dd { margin: 0 0 9px; }
+.ar-fig .ar-facts dd:last-child { margin-bottom: 0; }
+@media (max-width: 640px) { .ar-fig .ar-machine { grid-template-columns: 1fr; } }
+
+/* Boxed note in the body text. */
+.ar-note { margin: 2em 0; padding: 14px 18px 2px; background: #f7f5ee; border-left: 4px solid #b8922a; border-radius: 0 6px 6px 0; }
+.ar-note p { font-size: 0.95em; }
